@@ -1,0 +1,12 @@
+{
+  "base_reward_amount": 100,
+  "weights": {
+    "ensemble_accuracy": 0.40,
+    "diversity_score": 0.20,
+    "generalization_score": 0.20,
+    "convergence_rate": 0.10,
+    "avg_base_model_score": 0.10
+  },
+  "bonus_threshold": 0.9,
+  "bonus_multiplier": 1.5
+}

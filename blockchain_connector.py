@@ -241,6 +241,15 @@ class BlockchainConnector:
         
         return tx_hash
     
+    def register_ga_stacking_model(self, ipfs_hash, round_num, version, 
+                             participating_clients, base_model_count, meta_model_count):
+        """Register a GA-Stacking model with metadata."""
+        return self.send_blockchain_transaction(
+            "registerGAStackingModel",
+            [ipfs_hash, round_num, version, participating_clients, 
+            base_model_count, meta_model_count]
+        )
+    
     def send_blockchain_transaction(self, transaction_function, function_args, retry_count=5, initial_delay=1):
         """
         Send a blockchain transaction with retry logic and proper nonce management.

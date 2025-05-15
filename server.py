@@ -7,16 +7,18 @@ import os
 import json
 import pickle
 import time
-from typing import Dict, List, Optional, Tuple, Union, Any, Set
+from typing import Dict, List, Optional, Tuple, Union, Any, Set, Callable
 from datetime import datetime, timezone
 import logging
 import random
 from pathlib import Path
 import matplotlib.pyplot as plt
 import pytz
+import hashlib
 
 import flwr as fl
 from flwr.server.client_proxy import ClientProxy
+from flwr.server import ServerConfig
 from flwr.common import (
     Parameters,
     Scalar,
@@ -26,6 +28,8 @@ from flwr.common import (
     EvaluateRes,
     parameters_to_ndarrays,
     ndarrays_to_parameters,
+    NDArrays,
+    MetricsAggregationFn,
 )
 import numpy as np
 
@@ -33,8 +37,7 @@ from ipfs_connector import IPFSConnector
 from blockchain_connector import BlockchainConnector
 from ensemble_aggregation import EnsembleAggregator
 from ga_stacking_reward_system import GAStackingRewardSystem
-from monitoring import start_monitoring_server
-
+from server_config import fit_config_fn, evaluate_config_fn
 
 # Configure logging
 logging.basicConfig(
@@ -57,16 +60,20 @@ class EnhancedFedAvgWithGA(fl.server.strategy.FedAvg):
         device: str = "cpu",
         **kwargs,
     ):
+        """Initialize the Enhanced FedAvg with GA strategy."""
         super().__init__(*args, **kwargs)
         
         # Initialize IPFS connector
-        self.ipfs = ipfs_connector or IPFSConnector()
+        self.ipfs = ipfs_connector if ipfs_connector is not None else IPFSConnector()
         
         # Initialize blockchain connector
         self.blockchain = blockchain_connector
-        
-        # Set version prefix
+                
         self.base_version_prefix = version_prefix
+
+        # Initialize ensemble aggregator
+        # NOTE: Removed device parameter here for PyTorch-free implementation
+        self.ensemble_aggregator = EnsembleAggregator()
         
         # Generate session-specific versioning
         timestamp = int(time.time())
@@ -79,7 +86,6 @@ class EnhancedFedAvgWithGA(fl.server.strategy.FedAvg):
         self.version_prefix = f"{self.base_version_prefix}.{self.session_tag}"
         
         logger.info(f"Initialized with version strategy: base={self.base_version_prefix}, session={self.session_tag}")
-        
         
         # Flag to only allow authorized clients
         self.authorized_clients_only = authorized_clients_only
@@ -97,12 +103,16 @@ class EnhancedFedAvgWithGA(fl.server.strategy.FedAvg):
         self.metrics_history = []
         
         # Ensemble aggregator
-        self.ensemble_aggregator = EnsembleAggregator(device=device)
+        self.ensemble_aggregator = EnsembleAggregator()
         
         self.reward_system = GAStackingRewardSystem(self.blockchain)
         
         # Load authorized clients from blockchain
         self._load_authorized_clients()
+        
+        # Set device
+        self.device = device
+        
         
         num_rounds = kwargs.get('num_rounds', 3)  # Default to 3 rounds if not specified
         if hasattr(self, "blockchain") and self.blockchain:
@@ -420,7 +430,7 @@ class EnhancedFedAvgWithGA(fl.server.strategy.FedAvg):
     ) -> List[Tuple[ClientProxy, EvaluateIns]]:
         """Configure the evaluation round."""
         
-        # Get parameters as ndarrays
+        # Convert Parameters object to a list of NumPy arrays
         params_ndarrays = parameters_to_ndarrays(parameters)
         
         # Check if we have an ensemble or a regular model
@@ -463,8 +473,8 @@ class EnhancedFedAvgWithGA(fl.server.strategy.FedAvg):
         # Include IPFS hash in config
         config = {"ipfs_hash": ipfs_hash, "server_round": server_round}
         
-        # Configure evaluation instructions for clients
-        evaluate_ins = EvaluateIns(parameters, config)
+        # Convert back to Parameters object for EvaluateIns
+        evaluate_ins = EvaluateIns(ndarrays_to_parameters(params_ndarrays), config)
         
         # Sample clients for evaluation
         clients = client_manager.sample(
@@ -1019,24 +1029,25 @@ def start_server(
     device: str = "cpu"
 ) -> None:
     """
-    Start the enhanced federated learning server with GA-Stacking, IPFS and blockchain integration.
+    Start the federated learning server.
     
     Args:
-        server_address: Server address (host:port)
-        num_rounds: Number of federated learning rounds
-        min_fit_clients: Minimum number of clients for training
-        min_evaluate_clients: Minimum number of clients for evaluation
-        fraction_fit: Fraction of clients to use for training
+        server_address: Server address in format "host:port"
         ipfs_url: IPFS API URL
-        ganache_url: Ganache blockchain URL
-        contract_address: Federation contract address (if already deployed)
-        private_key: Private key for blockchain transactions
-        deploy_contract: Whether to deploy a new contract if address not provided
-        version_prefix: Version prefix for model versioning
-        authorized_clients_only: Whether to only accept contributions from authorized clients
-        authorized_clients: List of client addresses to authorize (if not already authorized)
-        round_rewards: Reward points to distribute each round
-        device: Device to use for computation
+        ganache_url: Ganache URL
+        contract_address: Address of the deployed smart contract
+        server_private_key: Private key for the server
+        server_wallet_address: Wallet address for the server
+        continue_from_round: Round to continue from (0 for new server)
+        continue_from_ipfs: IPFS hash to continue from
+        output_dir: Directory to save server outputs
+        bootstrap_clients: Number of clients to bootstrap with
+        min_clients: Minimum number of available clients
+        ssl_key: SSL key file path
+        ssl_cert: SSL certificate file path
+        ca_cert: CA certificate file path
+        strategy: Strategy to use ('fedavg_ga' or 'fedavg')
+        ga_stacking: Whether to use GA-Stacking
     """
     # Initialize IPFS connector
     ipfs_connector = IPFSConnector(ipfs_api_url=ipfs_url)
@@ -1149,8 +1160,7 @@ def start_server(
         json.dump(summary, f, indent=2)
     
     logger.info(f"Server completed {num_rounds} rounds of federated learning with GA-Stacking")
-    logger.info(f"All metrics saved to {metrics_dir}")
-    
+    logger.info(f"All metrics saved to {metrics_dir}")  
 
 if __name__ == "__main__":
     import argparse

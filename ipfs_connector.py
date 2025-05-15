@@ -2,7 +2,7 @@ import io
 import json
 import logging
 import requests
-import torch
+import pickle
 import base64
 from typing import Dict, Any, Union, BinaryIO, Optional
 
@@ -11,6 +11,7 @@ logger = logging.getLogger("federated.ipfs")
 class IPFSConnector:
     """
     Enhanced IPFS connector for federated learning - optimized for model exchange
+    Works with scikit-learn models and generic Python objects
     """
     
     def __init__(self, ipfs_api_url: str = "http://127.0.0.1:5001/api/v0"):
@@ -118,48 +119,59 @@ class IPFSConnector:
         
         return pinned
     
-    def upload_model(self, model: torch.nn.Module, model_info: Dict[str, Any] = None) -> str:
+    def upload_model(self, model: Any, model_info: Dict[str, Any] = None) -> str:
         """
-        Upload a PyTorch model to IPFS
+        Upload a model to IPFS (works with scikit-learn models)
         
         Args:
-            model: PyTorch model to upload
+            model: The model to upload (e.g., scikit-learn model)
             model_info: Additional info to store with the model
             
         Returns:
             IPFS hash (CID) of the uploaded model
         """
-        # Serialize the model with metadata
-        buffer = io.BytesIO()
+        # Two options for serialization:
+        # 1. JSON for metadata + base64 encoded pickle for the model
+        # 2. Full JSON serialization of parameters for compatible models
         
-        # Create a dictionary with both model state and metadata
-        model_data = {
-            "state_dict": {k: v.cpu().detach().numpy().tolist() for k, v in model.state_dict().items()},
-            "info": model_info or {}
-        }
-        
-        # Convert to JSON
-        model_json = json.dumps(model_data)
-        
-        # Add the model to IPFS
-        ipfs_hash = self.add_file(model_json.encode('utf-8'), "model.json")
-        
-        # Pin the file to prevent garbage collection
-        self.pin_file(ipfs_hash)
-        
-        logger.info(f"Uploaded model to IPFS with hash: {ipfs_hash}")
-        
-        return ipfs_hash
+        try:
+            # Serialize the model to pickle
+            model_pickle = pickle.dumps(model)
+            model_b64 = base64.b64encode(model_pickle).decode('utf-8')
+            
+            # Create a dictionary with both model data and metadata
+            model_data = {
+                "model_format": "pickle_base64",
+                "model_data": model_b64,
+                "info": model_info or {}
+            }
+            
+            # Convert to JSON
+            model_json = json.dumps(model_data)
+            
+            # Add the model to IPFS
+            ipfs_hash = self.add_file(model_json.encode('utf-8'), "model.json")
+            
+            # Pin the file to prevent garbage collection
+            self.pin_file(ipfs_hash)
+            
+            logger.info(f"Uploaded model to IPFS with hash: {ipfs_hash}")
+            
+            return ipfs_hash
+            
+        except Exception as e:
+            logger.error(f"Error uploading model to IPFS: {e}")
+            raise
     
-    def download_model(self, ipfs_hash: str) -> Dict[str, torch.Tensor]:
+    def download_model(self, ipfs_hash: str) -> Any:
         """
-        Download a PyTorch model from IPFS
+        Download a model from IPFS
         
         Args:
             ipfs_hash: IPFS hash (CID) of the model
             
         Returns:
-            Dictionary containing the model state dict with torch tensors
+            The deserialized model
         """
         try:
             # Get the model data from IPFS
@@ -168,12 +180,20 @@ class IPFSConnector:
             # Parse the JSON data
             model_json = json.loads(model_data.decode('utf-8'))
             
-            # Extract the state dict and convert lists back to tensors
-            state_dict = {k: torch.tensor(v) for k, v in model_json["state_dict"].items()}
+            # Check the format
+            model_format = model_json.get("model_format", "unknown")
             
-            logger.info(f"Successfully downloaded model from IPFS with hash: {ipfs_hash}")
-            
-            return state_dict
+            if model_format == "pickle_base64":
+                # Decode and unpickle the model
+                model_b64 = model_json["model_data"]
+                model_pickle = base64.b64decode(model_b64)
+                model = pickle.loads(model_pickle)
+                logger.info(f"Successfully downloaded and unpickled model from IPFS: {ipfs_hash}")
+                return model
+            else:
+                logger.error(f"Unsupported model format: {model_format}")
+                raise ValueError(f"Unsupported model format: {model_format}")
+                
         except Exception as e:
             logger.error(f"Error downloading model from IPFS: {e}")
             raise
@@ -311,7 +331,6 @@ class IPFSConnector:
             logger.error(f"Error verifying hash {ipfs_hash}: {e}")
             return False
         
-        
     def inspect_model_content(self, ipfs_hash):
         """
         Retrieve and inspect the contents of a model stored in IPFS.
@@ -333,57 +352,52 @@ class IPFSConnector:
                 print(f"Failed to retrieve content for hash {ipfs_hash}: {response.text}")
                 return None
             
-            # The content should be a serialized PyTorch model
+            # Get the content
             content = response.content
             print(f"Retrieved {len(content)} bytes from IPFS hash {ipfs_hash}")
             
-            # First try to interpret as JSON since the error suggests it might be JSON
+            # First try to interpret as JSON
             try:
                 import json
                 model_json = json.loads(content)
-                print(f"Successfully decoded as JSON: {json.dumps(model_json, indent=2)}")
-                return model_json
+                print(f"Successfully decoded as JSON with keys: {list(model_json.keys())}")
+                
+                # Check if it's our format with pickled model
+                if "model_format" in model_json and model_json["model_format"] == "pickle_base64":
+                    print("Contains base64 encoded pickled model")
+                    
+                    # Don't decode the full model, just report its presence
+                    info = model_json.get("info", {})
+                    print(f"Model info: {json.dumps(info, indent=2)}")
+                    
+                    return model_json
+                else:
+                    print(f"JSON content: {json.dumps(model_json, indent=2)[:1000]}")
+                    return model_json
+                    
             except json.JSONDecodeError as je:
                 print(f"Not valid JSON: {je}")
             
-            # Try to load as a pickle/torch serialized object
+            # Try to load as a pickle object
             try:
-                import io
-                import torch
-                
-                buffer = io.BytesIO(content)
-                model_data = torch.load(buffer, map_location=torch.device('cpu'))
+                import pickle
+                model_data = pickle.loads(content)
                 
                 # Print model structure
                 print(f"Model data type: {type(model_data)}")
                 
                 if isinstance(model_data, dict):
-                    # This is likely a state_dict or a dict with model info
+                    # This is likely a dict with model info
                     keys = list(model_data.keys())
                     print(f"Model contains {len(keys)} keys: {keys}")
-                    
-                    # If it's a state_dict, show tensor shapes
-                    shapes = {}
-                    for key, value in model_data.items():
-                        if hasattr(value, 'shape'):
-                            shapes[key] = value.shape
-                    
-                    if shapes:
-                        print(f"Tensor shapes: {shapes}")
-                    
-                    return model_data
-                
-                elif isinstance(model_data, torch.nn.Module):
-                    # This is a full model
-                    print(f"Full model of type: {model_data.__class__.__name__}")
                     return model_data
                 
                 else:
-                    print(f"Unknown model format: {model_data}")
+                    print(f"Unpickled object of type: {type(model_data)}")
                     return model_data
                     
             except Exception as e:
-                print(f"Failed to load as PyTorch model: {e}")
+                print(f"Failed to load as pickled model: {e}")
                     
             # Try to interpret as plain text
             try:
@@ -457,4 +471,52 @@ class IPFSConnector:
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse JSON from IPFS hash {ipfs_hash}: {e}")
             raise
+    
+    def upload_ensemble_state(self, ensemble_state: Dict[str, Any], extra_info: Dict[str, Any] = None) -> str:
+        """
+        Upload an ensemble state to IPFS
         
+        Args:
+            ensemble_state: Dictionary with ensemble state (weights, model_names, etc.)
+            extra_info: Additional information to include
+            
+        Returns:
+            IPFS hash of the uploaded ensemble state
+        """
+        # Create a data structure with both ensemble state and extra info
+        data = {
+            "ensemble_state": ensemble_state,
+            "info": extra_info or {}
+        }
+        
+        # Add to IPFS
+        ipfs_hash = self.add_json(data)
+        
+        # Pin the file
+        self.pin_file(ipfs_hash)
+        
+        logger.info(f"Uploaded ensemble state to IPFS with hash: {ipfs_hash}")
+        return ipfs_hash
+    
+    def download_ensemble_state(self, ipfs_hash: str) -> Dict[str, Any]:
+        """
+        Download an ensemble state from IPFS
+        
+        Args:
+            ipfs_hash: IPFS hash of the ensemble state
+            
+        Returns:
+            Dictionary with the ensemble state
+        """
+        try:
+            # Get the data from IPFS
+            data = self.get_json(ipfs_hash)
+            
+            # Extract the ensemble state
+            ensemble_state = data.get("ensemble_state", {})
+            
+            logger.info(f"Successfully downloaded ensemble state from IPFS: {ipfs_hash}")
+            return ensemble_state
+        except Exception as e:
+            logger.error(f"Error downloading ensemble state from IPFS: {e}")
+            raise

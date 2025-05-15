@@ -176,6 +176,7 @@ class GAStackingRewardSystem:
                 allocated_eth = updated_pool_info['allocated_eth']
                 
                 self.logger.info(f"Successfully allocated {allocated_eth} ETH rewards for round {round_number}")
+                self.log_client_rewards(round_number, tx_hash)
                 return True, allocated_eth
             else:
                 self.logger.error(f"Failed to allocate rewards for round {round_number}")
