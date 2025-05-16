@@ -52,7 +52,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 # Import GA-Stacking modules
 from ga_stacking.pipeline import GAStackingPipeline
 from ga_stacking.base_models import BASE_MODELS, META_MODELS
-from ga_stacking.utils import evaluate_metrics
+from ga_stacking.utils import split_and_scale, evaluate_metrics
 
 # Configure logging
 logging.basicConfig(
@@ -141,6 +141,7 @@ class GAStackingClient(fl.client.NumPyClient):
             except Exception as e:
                 logger.error(f"Failed to verify client authorization: {e}")
     
+    # Rest of the GAStackingClient class remains unchanged...
     def get_parameters(self, config):
         """Get model parameters as a list of NumPy arrays."""
         if not hasattr(self, 'ensemble_state') or self.ensemble_state is None:
@@ -250,13 +251,14 @@ class GAStackingClient(fl.client.NumPyClient):
 
         # Get training config
         do_ga_stacking = bool(config.get("ga_stacking", True))
-        validation_split = float(config.get("validation_split", 0.2))
+        validation_split = float(config.get("validation_split", 0.3))
         
         # Create validation split
         try:
             # Combine training and test data into a single DataFrame for splitting
             data = pd.DataFrame(self.X_train, columns=[f"feature_{i}" for i in range(self.X_train.shape[1])])
             data["Class"] = self.y_train  # Add the target column
+            logger.info(f"DataFrame columns before preprocessing: {data.columns.tolist()}")
 
             # Use split_and_scale to split and preprocess the data
             X_train, X_val, X_test, y_train, y_val, y_test, scaler = split_and_scale(
@@ -432,6 +434,7 @@ class GAStackingClient(fl.client.NumPyClient):
     def evaluate(self, parameters: Parameters, config: Dict[str, Scalar]) -> Tuple[float, int, Dict[str, Scalar]]:
         """
         Evaluate the model on the local test dataset using GA-Stacking.
+        Modified to handle the case when the model is not yet trained.
         """
         # Check if client is authorized (if blockchain is available)
         if self.blockchain and self.wallet_address:
@@ -460,15 +463,36 @@ class GAStackingClient(fl.client.NumPyClient):
         if len(params) > 0 and len(params[0]) > 0:
             self.set_parameters(params)
         
-        # If we have a trained pipeline, use it for evaluation
-        if hasattr(self, 'ga_pipeline') and self.ga_pipeline is not None and hasattr(self.ga_pipeline, 'predict'):
+        # Check if the pipeline is trained and has the predict method
+        pipeline_trained = (hasattr(self, 'ga_pipeline') and 
+                        self.ga_pipeline is not None and 
+                        hasattr(self.ga_pipeline, 'predict') and
+                        hasattr(self, 'ensemble_state') and 
+                        self.ensemble_state is not None)
+        
+        if not pipeline_trained:
+            logger.warning("GA pipeline not trained yet, returning default evaluation metrics")
+            # Return default metrics
+            return float('inf'), len(self.X_test), {
+                "loss": float('inf'),
+                "accuracy": 0.0,
+                "precision": 0.0,
+                "recall": 0.0,
+                "f1_score": 0.0,
+                "auc_roc": 0.5,
+                "wallet_address": self.wallet_address if self.wallet_address else "unknown",
+                "model_status": "not_trained"
+            }
+        
+        # If the pipeline is trained, proceed with evaluation
+        try:
             y_pred = self.ga_pipeline.predict(self.X_test)
             test_metrics = evaluate_metrics(self.y_test, y_pred)
             
             accuracy = test_metrics['accuracy'] * 100.0
             loss = 1.0 - test_metrics['auc']  # Use 1-AUC as a loss
             
-            # IMPORTANT ADDITION: Calculate confusion matrix components
+            # Calculate confusion matrix components
             threshold = 0.3  # Adjust based on your use case
             y_pred_labels = (y_pred > threshold).astype(int)
             
@@ -501,7 +525,9 @@ class GAStackingClient(fl.client.NumPyClient):
                 "true_positives": int(tp),
                 "false_positives": int(fp),
                 "true_negatives": int(tn),
-                "false_negatives": int(fn)
+                "false_negatives": int(fn),
+                
+                "model_status": "trained"
             }
             
             # Add GA-Stacking metrics if available
@@ -529,8 +555,9 @@ class GAStackingClient(fl.client.NumPyClient):
             })
             
             return float(loss), len(self.X_test), metrics
-        else:
-            # Fallback if pipeline isn't trained
+        except Exception as e:
+            logger.error(f"Error during evaluation: {e}")
+            # Return default metrics in case of error
             return float('inf'), len(self.X_test), {
                 "loss": float('inf'),
                 "accuracy": 0.0,
@@ -538,14 +565,67 @@ class GAStackingClient(fl.client.NumPyClient):
                 "recall": 0.0,
                 "f1_score": 0.0,
                 "auc_roc": 0.5,
-                "wallet_address": self.wallet_address if self.wallet_address else "unknown"
-            }
+                "wallet_address": self.wallet_address if self.wallet_address else "unknown",
+                "error": str(e),
+                "model_status": "error"
+        }
     
     def save_metrics_history(self, filepath: str = "client_metrics.json"):
         """Save metrics history to a file."""
         with open(filepath, "w") as f:
             json.dump(self.metrics_history, f, indent=2)
         logger.info(f"Saved metrics history to {filepath}")
+
+
+def load_csv_dataset(csv_file_path: str, target_col: str = "Class") -> pd.DataFrame:
+    """
+    Load a dataset from a CSV file.
+    
+    Args:
+        csv_file_path: Path to the CSV file
+        target_col: Name of the target column
+        
+    Returns:
+        DataFrame with the loaded data
+    """
+    try:
+        # Check if file exists
+        if not os.path.exists(csv_file_path):
+            raise FileNotFoundError(f"Dataset file not found: {csv_file_path}")
+        
+        # Load the CSV file
+        data = pd.read_csv(csv_file_path)
+        
+        # Ensure the target column exists
+        if target_col not in data.columns:
+            if 'Class' in data.columns:
+                target_col = 'Class'
+                logger.warning(f"Target column '{target_col}' not found, using 'Class' instead")
+            else:
+                # Try to identify the target column based on common names
+                potential_targets = ['target', 'label', 'y', 'class', 'fraud', 'is_fraud']
+                for col in potential_targets:
+                    if col in data.columns:
+                        target_col = col
+                        logger.warning(f"Target column not found, using '{target_col}' instead")
+                        break
+                else:
+                    # If no known target column is found, use the last column
+                    target_col = data.columns[-1]
+                    logger.warning(f"Target column not found, using last column '{target_col}' as target")
+        
+        # Check if 'Time' column exists and add it if not
+        if 'Time' not in data.columns:
+            data['Time'] = range(len(data))
+            logger.info("Added 'Time' column to dataset")
+            
+        logger.info(f"Successfully loaded dataset with {len(data)} samples and {len(data.columns)} features")
+        logger.info(f"Target column: {target_col}, Class distribution: {data[target_col].value_counts().to_dict()}")
+        
+        return data
+    except Exception as e:
+        logger.error(f"Error loading dataset: {e}")
+        raise
 
 
 def start_client(
@@ -559,8 +639,9 @@ def start_client(
     ensemble_size: int = 8,
     ga_generations: int = 3,
     ga_population_size: int = 8,
-    train_file: Optional[str] = None,
-    test_file: Optional[str] = None
+    csv_file: Optional[str] = None,
+    target_column: str = "Class",
+    test_size: float = 0.2
 ) -> None:
     """
     Start a federated learning client with GA-Stacking ensemble optimization.
@@ -576,25 +657,26 @@ def start_client(
         ensemble_size: Number of models in the ensemble
         ga_generations: Number of GA generations to run
         ga_population_size: Size of GA population
-        train_file: Path to the training data file
-        test_file: Path to the test data file
+        csv_file: Path to the CSV data file
+        target_column: Name of the target column in the CSV file
+        test_size: Proportion of data to use for testing
     """
-    # Extract client ID from training file path if not explicitly provided
-    if client_id is None and train_file is not None:
+    # Extract client ID from CSV file path if not explicitly provided
+    if client_id is None and csv_file is not None:
         # Try to extract client ID from the filename
-        filename = os.path.basename(train_file)
-        if filename.startswith("client-") and "_train" in filename:
-            # Extract client-X from filename like "client-1_train.txt"
-            client_id = filename.split("_train")[0]
-            logger.info(f"Extracted client ID from training file: {client_id}")
+        filename = os.path.basename(csv_file)
+        if filename.startswith("client_"):
+            # Extract client_X from filename like "client_1.csv"
+            client_id = filename.split(".")[0]
+            logger.info(f"Extracted client ID from CSV file: {client_id}")
         else:
             # Use a default client ID with timestamp to avoid collisions
             timestamp = int(time.time())
-            client_id = f"client-{timestamp}"
+            client_id = f"client_{timestamp}"
             logger.info(f"Using generated client ID: {client_id}")
     elif client_id is None:
-        # Default client ID if no train file or explicit ID provided
-        client_id = f"client-{os.getpid()}"
+        # Default client ID if no CSV file or explicit ID provided
+        client_id = f"client_{os.getpid()}"
         logger.info(f"Using process-based client ID: {client_id}")
     
     # Create metrics directory
@@ -619,48 +701,72 @@ def start_client(
             logger.error(f"Failed to initialize blockchain connector: {e}")
             logger.warning("Continuing without blockchain features")
     
-    # Determine dataset files to load
-    if train_file is None or test_file is None:
-        # If files aren't explicitly provided, derive from client ID
-        derived_train_file = f"{client_id}_train.txt"
-        derived_test_file = f"{client_id}_test.txt"
+    # Determine dataset file to load
+    if csv_file is None:
+        # If file isn't explicitly provided, derive from client ID
+        derived_csv_file = f"{client_id}.csv"
         
-        # Check if derived files exist
-        if not os.path.exists(derived_train_file) or not os.path.exists(derived_test_file):
-            logger.warning(f"Derived dataset files not found: {derived_train_file}, {derived_test_file}")
+        # Check if derived file exists
+        if not os.path.exists(derived_csv_file):
+            logger.warning(f"Derived dataset file not found: {derived_csv_file}")
             
             # Try to find in data directory
-            data_dir_train = f"data/{client_id}_train.txt"
-            data_dir_test = f"data/{client_id}_test.txt"
+            data_dir_csv = f"data/{client_id}.csv"
             
-            if os.path.exists(data_dir_train) and os.path.exists(data_dir_test):
-                logger.info(f"Found dataset files in data directory")
-                train_file = data_dir_train
-                test_file = data_dir_test
+            if os.path.exists(data_dir_csv):
+                logger.info(f"Found dataset file in data directory")
+                csv_file = data_dir_csv
             else:
-                # Fall back to default client-1 files
-                logger.warning(f"Using default dataset files")
-                train_file = "client-1_train.txt"
-                test_file = "client-1_test.txt"
+                # Fall back to default client_0.csv file
+                logger.warning(f"Using default dataset file")
+                csv_file = "client_0.csv"
                 
-                # Check if default files exist in data directory
-                if not os.path.exists(train_file) or not os.path.exists(test_file):
-                    data_dir_default_train = "data/client-1_train.txt"
-                    data_dir_default_test = "data/client-1_test.txt"
+                # Check if default file exists in data directory
+                if not os.path.exists(csv_file):
+                    data_dir_default_csv = "data/client_0.csv"
                     
-                    if os.path.exists(data_dir_default_train) and os.path.exists(data_dir_default_test):
-                        train_file = data_dir_default_train
-                        test_file = data_dir_default_test
+                    if os.path.exists(data_dir_default_csv):
+                        csv_file = data_dir_default_csv
+                    else:
+                        raise FileNotFoundError(f"No dataset file found for {client_id}")
         else:
-            train_file = derived_train_file
-            test_file = derived_test_file
+            csv_file = derived_csv_file
     
-    logger.info(f"Using dataset files: {train_file} and {test_file}")
+    logger.info(f"Using dataset file: {csv_file}")
+    
+    # Load and process dataset
+    try:
+        # Load CSV data
+        data = load_csv_dataset(csv_file, target_column)
+        
+        # Use split_and_scale function to get train/val/test splits
+        X_train, X_val, X_test, y_train, y_val, y_test, scaler = split_and_scale(
+            data=data,
+            target_col=target_column,
+            test_size=test_size,
+            random_state=42
+        )
+        
+        logger.info(f"Data preprocessing complete:")
+        logger.info(f"- Training set: {X_train.shape[0]} samples")
+        logger.info(f"- Validation set: {X_val.shape[0]} samples")
+        logger.info(f"- Test set: {X_test.shape[0]} samples")
+        
+        # For client interface, combine train and validation for X_train, y_train
+        # The client's fit() method will split them again for GA-Stacking
+        X_train_combined = np.vstack([X_train, X_val])
+        y_train_combined = np.concatenate([y_train, y_val])
+        
+        logger.info(f"Combined training set: {X_train_combined.shape[0]} samples")
+        
+    except Exception as e:
+        logger.error(f"Error during data preparation: {e}")
+        raise
     
     # Create client
     client = GAStackingClient(
-        X_train=X_train,
-        y_train=y_train,
+        X_train=X_train_combined,
+        y_train=y_train_combined,
         X_test=X_test,
         y_test=y_test,
         ensemble_size=ensemble_size,
@@ -680,10 +786,9 @@ def start_client(
     client.save_metrics_history(filepath=f"metrics/{client_id}/metrics_history.json")
     
     logger.info(f"Client {client_id} completed federated learning with GA-Stacking")
-
+    
 if __name__ == "__main__":
     import argparse
-    
     parser = argparse.ArgumentParser(description="Start FL client with GA-Stacking ensemble optimization")
     parser.add_argument("--server-address", type=str, default="127.0.0.1:8088", help="Server address (host:port)")
     parser.add_argument("--ipfs-url", type=str, default="http://127.0.0.1:5001/api/v0", help="IPFS API URL")
@@ -695,9 +800,19 @@ if __name__ == "__main__":
     parser.add_argument("--ensemble-size", type=int, default=8, help="Number of models in the ensemble")
     parser.add_argument("--ga-generations", type=int, default=3, help="Number of GA generations to run")
     parser.add_argument("--ga-population-size", type=int, default=10, help="Size of GA population")
-    parser.add_argument("--train-file", type=str, help="Path to training data file")
-    parser.add_argument("--test-file", type=str, help="Path to test data file")
+    parser.add_argument("--csv-file", type=str, help="Path to CSV data file")
+    parser.add_argument("--target-column", type=str, default="Class", help="Name of target column in CSV file")
+    parser.add_argument("--test-size", type=float, default=0.2, help="Proportion of data to use for testing")
+    
+    # For backward compatibility
+    parser.add_argument("--train-file", type=str, help="[DEPRECATED] Path to training data file")
+    parser.add_argument("--test-file", type=str, help="[DEPRECATED] Path to test data file")
     args = parser.parse_args()
+    
+    # Print warning if using deprecated arguments
+    if args.train_file or args.test_file:
+        print("Warning: --train-file and --test-file are deprecated. Please use --csv-file instead.")
+        print("Check our documentation for information on using CSV files with the updated client.")
     
     # Check if contract address is stored in file
     if args.contract_address is None:
@@ -707,6 +822,14 @@ if __name__ == "__main__":
                 print(f"Loaded contract address from file: {args.contract_address}")
         except FileNotFoundError:
             print("No contract address provided or found in file")
+    
+    # Handle backward compatibility for train/test files
+    csv_file = args.csv_file
+    if csv_file is None and args.train_file:
+        print(f"Using train file in backward compatibility mode: {args.train_file}")
+        # Here you would add logic to convert train/test files to a single CSV
+        # For now, just print a warning
+        print("Please convert your data to CSV format for best compatibility.")
     
     start_client(
         server_address=args.server_address,
@@ -719,6 +842,7 @@ if __name__ == "__main__":
         ensemble_size=args.ensemble_size,
         ga_generations=args.ga_generations,
         ga_population_size=args.ga_population_size,
-        train_file=args.train_file,
-        test_file=args.test_file
+        csv_file=args.csv_file,
+        target_column=args.target_column,
+        test_size=args.test_size
     )

@@ -14,27 +14,72 @@ from sklearn.metrics import (
 from sklearn.base import clone
 
 from base_models import BASE_MODELS, META_MODELS
-
+import logging
+logger = logging.getLogger("FL-Client-Ensemble")
 
 def split_and_scale(data, target_col='Class', test_size=0.3, random_state=42):
     """
-    Split raw DataFrame into train/val/test, scale and balance.
-
+    A modified version of split_and_scale that does not require a 'Time' column.
+    This function handles preprocessing a DataFrame for machine learning.
+    
+    Args:
+        data (pd.DataFrame): Input DataFrame with features and target column
+        target_col (str): Name of the target column
+        test_size (float): Proportion of data to use for testing
+        random_state (int): Random seed for reproducibility
+        
     Returns:
-      X_train_s, X_val_s, X_test_s, y_train, y_val, y_test, scaler
+        X_train_s, X_val_s, X_test_s, y_train, y_val, y_test, scaler
     """
-    X = data.drop(['Time', target_col], axis=1)
+    # Log all columns for debugging
+    logger.info(f"DataFrame columns: {data.columns.tolist()}")
+    
+    # Check if target column exists
+    if target_col not in data.columns:
+        raise ValueError(f"Target column '{target_col}' not found in data. Available columns: {data.columns.tolist()}")
+        
+    # Extract target variable
     y = data[target_col]
+    
+    # Drop 'Time' column if it exists
+    if 'Time' in data.columns:
+        data = data.drop(['Time'], axis=1)
+    
+    # Create feature set by dropping the target column
+    X = data.drop([target_col], axis=1)
+    
+    # Log shapes 
+    logger.info(f"Features shape: {X.shape}, Target shape: {y.shape}")
+    
+    # Split into train/temp and temp into val/test
     X_train, X_temp, y_train, y_temp = train_test_split(
         X, y, test_size=test_size, stratify=y, random_state=random_state)
+    
     X_val, X_test, y_val, y_test = train_test_split(
         X_temp, y_temp, test_size=2/3, stratify=y_temp, random_state=random_state)
+    
+    # Scale features
     scaler = RobustScaler().fit(X_train)
     X_train_s = scaler.transform(X_train)
-    X_val_s   = scaler.transform(X_val)
-    X_test_s  = scaler.transform(X_test)
-    X_train_s, y_train = SMOTE().fit_resample(X_train_s, y_train)
-    return X_train_s, X_val_s, X_test_s, y_train.values, y_val.values, y_test.values, scaler
+    X_val_s = scaler.transform(X_val)
+    X_test_s = scaler.transform(X_test)
+    
+    # Apply SMOTE to handle class imbalance
+    try:
+        X_train_s, y_train = SMOTE(random_state=random_state).fit_resample(X_train_s, y_train)
+        logger.info(f"SMOTE applied. New training shape: {X_train_s.shape}")
+    except Exception as e:
+        logger.warning(f"SMOTE failed, using original data: {str(e)}")
+    
+    # Convert to numpy arrays
+    y_train_np = np.array(y_train)
+    y_val_np = np.array(y_val)
+    y_test_np = np.array(y_test)
+    
+    logger.info(f"Preprocessing complete.")
+    logger.info(f"Train: {X_train_s.shape}, Validation: {X_val_s.shape}, Test: {X_test_s.shape}")
+    
+    return X_train_s, X_val_s, X_test_s, y_train_np, y_val_np, y_test_np, scaler
 
 
 def train_base_models(X, y, model_dict=BASE_MODELS):

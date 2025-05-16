@@ -1,0 +1,89 @@
+{
+  "details": {
+    "contribution_count": 11,
+    "total_score": 587,
+    "is_authorized": true,
+    "last_contribution_timestamp": 1747221867,
+    "rewards_earned": 0,
+    "rewards_claimed": false
+  },
+  "records": [
+    {
+      "round": 1,
+      "accuracy": 70.64,
+      "score": 70,
+      "timestamp": 1747198993,
+      "rewarded": false
+    },
+    {
+      "round": 2,
+      "accuracy": 70.08,
+      "score": 70,
+      "timestamp": 1747199072,
+      "rewarded": false
+    },
+    {
+      "round": 3,
+      "accuracy": 70.55,
+      "score": 70,
+      "timestamp": 1747199146,
+      "rewarded": false
+    },
+    {
+      "round": 1,
+      "accuracy": 44.79,
+      "score": 44,
+      "timestamp": 1747214387,
+      "rewarded": false
+    },
+    {
+      "round": 2,
+      "accuracy": 44.82,
+      "score": 44,
+      "timestamp": 1747215003,
+      "rewarded": false
+    },
+    {
+      "round": 3,
+      "accuracy": 67.24,
+      "score": 67,
+      "timestamp": 1747215611,
+      "rewarded": false
+    },
+    {
+      "round": 1,
+      "accuracy": 45.25,
+      "score": 45,
+      "timestamp": 1747218457,
+      "rewarded": false
+    },
+    {
+      "round": 2,
+      "accuracy": 45.28,
+      "score": 45,
+      "timestamp": 1747219153,
+      "rewarded": false
+    },
+    {
+      "round": 1,
+      "accuracy": 44.54,
+      "score": 44,
+      "timestamp": 1747220447,
+      "rewarded": false
+    },
+    {
+      "round": 2,
+      "accuracy": 44.55,
+      "score": 44,
+      "timestamp": 1747221132,
+      "rewarded": false
+    },
+    {
+      "round": 3,
+      "accuracy": 44.51,
+      "score": 44,
+      "timestamp": 1747221867,
+      "rewarded": false
+    }
+  ]
+}
