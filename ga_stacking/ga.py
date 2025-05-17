@@ -5,7 +5,7 @@ Genetic Algorithm for optimizing weight vectors over meta-features.
 """
 import numpy as np
 import random
-from sklearn.metrics import roc_auc_score, f1_score
+from sklearn.metrics import f1_score, precision_score, recall_score
 
 
 def initialize_population(pop_size: int, n_models: int) -> list:
@@ -24,31 +24,47 @@ def evaluate(
     population: list,
     meta_X: np.ndarray,
     y_true: np.ndarray,
-    metric: str = 'auc'
+    metric: str = 'f1'
 ) -> tuple:
     """
-    Evaluate each weight vector by computing ensemble metric.
-
-    Args:
-        population: list of weight arrays
-        meta_X    : array (n_samples, n_models)
-        y_true    : array (n_samples,)
-        metric    : 'auc' or 'f1'
+    Evaluate each weight vector by computing ensemble metric:
+    one of ['precision', 'recall', 'f1'].
 
     Returns:
-        scores    : list of fitness scores sorted desc
-        sorted_pop: corresponding sorted population
+        - sorted_scores: List[float], scores of individuals sorted descending
+        - sorted_population: List[np.ndarray], population sorted by score
     """
+    # Define metric functions
+    metric_func_map = {
+        'f1': lambda y_true, y_pred: f1_score(y_true, y_pred > 0.5, pos_label=1),
+        'precision': lambda y_true, y_pred: precision_score(y_true, y_pred > 0.5, pos_label=1),
+        'recall': lambda y_true, y_pred: recall_score(y_true, y_pred > 0.5, pos_label=1),
+    }
+
+    if metric not in metric_func_map:
+        raise ValueError(f"Unsupported metric '{metric}'. Choose from: {list(metric_func_map.keys())}")
+
     scores = []
+    epsilon = 1e-3
+
     for w in population:
-        w = w / w.sum()
+        # Normalize weights safely
+        w = w / w.sum() if w.sum() != 0 else np.ones_like(w) / len(w)
+        w = np.clip(w, epsilon, 1)  # Avoid zero weights
+        w /= w.sum()
+        # Weighted ensemble output
         ens = np.dot(meta_X, w)
-        if metric == 'auc':
-            scores.append(roc_auc_score(y_true, ens))
-        else:
-            scores.append(f1_score(y_true, ens > 0.5))
+        pred = (ens > 0.5).astype(int)
+        # Evaluate using selected metric
+        score = metric_func_map[metric](y_true, pred)
+        scores.append(score)
+
+    # Sort scores and population by performance (descending)
     idx = np.argsort(scores)[::-1]
-    return [scores[i] for i in idx], [population[i] for i in idx]
+    sorted_scores = [scores[i] for i in idx]
+    sorted_population = [population[i] for i in idx]
+
+    return sorted_scores, sorted_population
 
 
 def selection(population: list, scores: list) -> list:

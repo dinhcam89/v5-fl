@@ -69,6 +69,8 @@ class GAStackingClient(fl.client.NumPyClient):
         self,
         X_train: np.ndarray,
         y_train: np.ndarray,
+        X_val: np.ndarray,
+        y_val: np.ndarray,
         X_test: np.ndarray,
         y_test: np.ndarray,
         ensemble_size: int = 5,
@@ -99,6 +101,8 @@ class GAStackingClient(fl.client.NumPyClient):
         """
         self.X_train = X_train
         self.y_train = y_train
+        self.X_val = X_val
+        self.y_val = y_val
         self.X_test = X_test
         self.y_test = y_test
         self.ensemble_size = ensemble_size
@@ -253,23 +257,9 @@ class GAStackingClient(fl.client.NumPyClient):
         do_ga_stacking = bool(config.get("ga_stacking", True))
         validation_split = float(config.get("validation_split", 0.3))
         
-        # Create validation split
-        try:
-            # Combine training and test data into a single DataFrame for splitting
-            data = pd.DataFrame(self.X_train, columns=[f"feature_{i}" for i in range(self.X_train.shape[1])])
-            data["Class"] = self.y_train  # Add the target column
-            logger.info(f"DataFrame columns before preprocessing: {data.columns.tolist()}")
-
-            # Use split_and_scale to split and preprocess the data
-            X_train, X_val, X_test, y_train, y_val, y_test, scaler = split_and_scale(
-                data=data,
-                target_col="Class",  # Adjust if your target column has a different name
-                test_size=validation_split,
-                random_state=42
-            )
-        except Exception as e:
-            logger.error(f"Error during data preprocessing: {e}")
-            raise
+        # Create validation split:
+        X_train, y_train = self.X_train, self.y_train
+        X_val, y_val = self.X_val, self.y_val
         
         # Run GA-Stacking
         if do_ga_stacking:
@@ -754,10 +744,10 @@ def start_client(
         
         # For client interface, combine train and validation for X_train, y_train
         # The client's fit() method will split them again for GA-Stacking
-        X_train_combined = np.vstack([X_train, X_val])
-        y_train_combined = np.concatenate([y_train, y_val])
+        #X_train_combined = np.vstack([X_train, X_val])
+        #y_train_combined = np.concatenate([y_train, y_val])
         
-        logger.info(f"Combined training set: {X_train_combined.shape[0]} samples")
+        #logger.info(f"Combined training set: {X_train_combined.shape[0]} samples")
         
     except Exception as e:
         logger.error(f"Error during data preparation: {e}")
@@ -765,8 +755,10 @@ def start_client(
     
     # Create client
     client = GAStackingClient(
-        X_train=X_train_combined,
-        y_train=y_train_combined,
+        X_train=X_train,
+        y_train=y_train,
+        X_val=X_val,
+        y_val=y_val,
         X_test=X_test,
         y_test=y_test,
         ensemble_size=ensemble_size,
@@ -790,9 +782,9 @@ def start_client(
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Start FL client with GA-Stacking ensemble optimization")
-    parser.add_argument("--server-address", type=str, default="127.0.0.1:8088", help="Server address (host:port)")
+    parser.add_argument("--server-address", type=str, default="192.168.80.180:8088", help="Server address (host:port)")
     parser.add_argument("--ipfs-url", type=str, default="http://127.0.0.1:5001/api/v0", help="IPFS API URL")
-    parser.add_argument("--ganache-url", type=str, default="http://192.168.1.146:7545", help="Ganache blockchain URL")
+    parser.add_argument("--ganache-url", type=str, default="http://192.168.80.1:7545", help="Ganache blockchain URL")
     parser.add_argument("--contract-address", type=str, help="Address of deployed EnhancedModelRegistry contract")
     parser.add_argument("--wallet-address", type=str, help="Client's Ethereum wallet address")
     parser.add_argument("--private-key", type=str, help="Client's private key (for signing transactions)")

@@ -1,20 +1,23 @@
 """
-Main script: orchestrate GA-stacking end-to-end.
+Main script: orchestrate GA-stacking end-to-end with meta-learner integration.
 """
 import pandas as pd
 import numpy as np
 import time
 import json
 from typing import Dict, Tuple, List, Any, Optional
+from sklearn.base import clone
+
+import copy
 
 import sys, os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from feature import generate_meta_features
+from feature import generate_meta_features, predict_meta_features
 from ga import GA_weighted
-from utils import split_and_scale, train_base_models, ensemble_predict, evaluate_metrics
-import config
+from utils import split_and_scale, train_base_models, evaluate_metrics
 from base_models import BASE_MODELS, META_MODELS
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import f1_score
+import config
 
 
 class GAStackingPipeline:
@@ -48,29 +51,21 @@ class GAStackingPipeline:
         self.model_names = list(base_models.keys())
     
     def train(self, X_train, y_train, X_val, y_val):
-        """Train the GA-Stacking ensemble."""
+        """Train the GA-Stacking ensemble with a meta-learner."""
         start_time = time.time()
         
-        # Step 1: Generate meta-features using cross-validation
-        if self.verbose:
-            print("Generating meta-features...")
-        meta_X_train = generate_meta_features(
-            X_train, y_train, self.base_models, n_splits=self.cv_folds)
-        
-        # Step 2: Train base models on full training data
+        # Step 1: Train base models
         if self.verbose:
             print("Training base models...")
         self.trained_base_models = train_base_models(X_train, y_train, self.base_models)
         
-        # Step 3: Generate meta-features for validation set
-        if self.verbose:
-            print("Generating validation meta-features...")
-        meta_X_val = np.column_stack([
-            model.predict_proba(X_val)[:, 1]
-            for model in self.trained_base_models.values()
-        ])
+        # Step 2: Generate meta-features
+        if self.verbose:    
+            print("Generating meta-features...")
+        meta_X_train = generate_meta_features(X_train, y_train, self.trained_base_models, n_splits=self.cv_folds)
+        meta_X_val = predict_meta_features(self.trained_base_models, X_val)
         
-        # Step 4: Run GA to get optimal weights
+        # Step 3: Run GA to get optimal weights
         if self.verbose:
             print("Running GA optimization...")
         self.best_weights, convergence = GA_weighted(
@@ -84,9 +79,46 @@ class GAStackingPipeline:
         )
         self.convergence_history = convergence
         
-        # Step 5: Calculate ensemble metrics
-        ens_val_preds = ensemble_predict(meta_X_val, self.best_weights)
-        val_metrics = evaluate_metrics(y_val, ens_val_preds)
+        # Step 4: Train the meta-learner
+        if self.verbose:
+            print("Training meta-learner...")
+            
+        # Make sure we have proper dimensions for the meta-learner input
+        # This is a key fix - ensuring proper input shape for the meta-learner
+        meta_level_val = meta_X_val.dot(self.best_weights)
+        
+        # If the meta-learner expects a 2D array, reshape accordingly
+        if len(meta_level_val.shape) == 1:
+            meta_level_val = meta_level_val.reshape(-1, 1)
+            
+        # Ensure y_val is the correct shape too
+        y_val_reshaped = y_val.copy()
+        if len(y_val_reshaped.shape) == 2 and y_val_reshaped.shape[1] == 1:
+            y_val_reshaped = y_val_reshaped.ravel()
+            
+        # Create and train the meta-learner
+        self.meta_model = copy.deepcopy(self.meta_models["meta_learner"])
+        
+        
+        # Add error checking when fitting meta-learner
+        try:
+            self.meta_model.fit(meta_level_val, y_val_reshaped)
+        except Exception as e:
+            print(f"Error fitting meta-learner: {str(e)}")
+            print(f"Meta features shape: {meta_level_val.shape}, Target shape: {y_val_reshaped.shape}")
+            print(f"Meta features sample: {meta_level_val[:5]}")
+            print(f"Target sample: {y_val_reshaped[:5]}")
+            raise  # Re-raise the exception after logging details
+        
+        # Step 5: Evaluate the meta-learner on the validation set
+        try:
+            meta_val_preds = self.meta_model.predict_proba(meta_level_val)[:, 1]
+        except Exception as e:
+            print(f"Error in predict_proba: {str(e)}")
+            # Some models might not have predict_proba
+            meta_val_preds = (self.meta_model.predict(meta_level_val) > 0.5).astype(float)
+        
+        val_metrics = evaluate_metrics(y_val, meta_val_preds)
         
         training_time = time.time() - start_time
         
@@ -96,22 +128,20 @@ class GAStackingPipeline:
         # Calculate generalization score
         gen_score = self._calculate_generalization(X_train, y_train, X_val, y_val)
         
-        # Calculate GA convergence rate
+         # Calculate convergence rate (new code)
         if len(self.convergence_history) > 1:
-            initial = self.convergence_history[0]
-            final = self.convergence_history[-1]
-            total_improvement = final - initial
+            # Convergence rate is how quickly the GA optimization converged
+            # A simple measure: (final_score - initial_score) / initial_score
+            initial_score = self.convergence_history[0]
+            final_score = self.convergence_history[-1]
             
-            # Find where we reached 90% of improvement
-            target = initial + 0.9 * total_improvement
-            for i, score in enumerate(self.convergence_history):
-                if score >= target:
-                    convergence_rate = 1.0 - (i / len(self.convergence_history))
-                    break
+            # Avoid division by zero
+            if initial_score > 0:
+                convergence_rate = min(1.0, (final_score - initial_score) / initial_score)
             else:
-                convergence_rate = 0.0
+                convergence_rate = 0.5  # Default value if initial score is 0
         else:
-            convergence_rate = 0.5
+            convergence_rate = 0.5  # Default value if not enough generations
         
         results = {
             "val_metrics": val_metrics,
@@ -120,29 +150,43 @@ class GAStackingPipeline:
             "training_time": training_time,
             "diversity_score": diversity_score,
             "generalization_score": gen_score,
-            "convergence_rate": convergence_rate,
-            "convergence_history": self.convergence_history
+            "convergence_history": self.convergence_history,
+            "convergence_rate": convergence_rate  # Add this line
         }
         
         return results
     
     def predict(self, X):
-        """Make predictions using the trained ensemble."""
-        if self.trained_base_models is None or self.best_weights is None:
+        """Make predictions using the trained ensemble with a meta-learner."""
+        if self.trained_base_models is None or self.best_weights is None or self.meta_model is None:
             raise ValueError("Model not trained. Call train() first.")
         
-        # Generate predictions from each base model
-        meta_X = np.column_stack([
-            model.predict_proba(X)[:, 1] 
-            for model in self.trained_base_models.values()
-        ])
-        
-        # Generate ensemble prediction
-        return ensemble_predict(meta_X, self.best_weights)
+        try:
+            # Generate meta-features from base models
+            meta_X = predict_meta_features(self.trained_base_models, X)
+            
+            # Generate meta-level features using GA weights
+            meta_level_X = meta_X.dot(self.best_weights)
+            
+            # Reshape if needed
+            if len(meta_level_X.shape) == 1:
+                meta_level_X = meta_level_X.reshape(-1, 1)
+            
+            # Use the meta-learner to make predictions
+            try:
+                # Try using predict_proba first (for classifiers)
+                return self.meta_model.predict_proba(meta_level_X)[:, 1]
+            except (AttributeError, IndexError):
+                # Fall back to predict for regressors or if predict_proba fails
+                return self.meta_model.predict(meta_level_X)
+        except Exception as e:
+            print(f"Error during prediction: {str(e)}")
+            # Return default predictions (all zeros or 0.5 for binary classification)
+            return np.zeros(len(X)) if self.metric == 'f1' else np.full(len(X), 0.5)
     
     def get_ensemble_state(self):
         """Get the trained ensemble state for serialization."""
-        if self.trained_base_models is None or self.best_weights is None:
+        if self.trained_base_models is None or self.best_weights is None or self.meta_model is None:
             raise ValueError("Model not trained. Call train() first.")
         
         # Get model parameters for each base model
@@ -159,18 +203,19 @@ class GAStackingPipeline:
                 model_params = model.get_params()
                 params.update(model_params)
             
-            # Add model coefficients if available
-            if hasattr(model, 'coef_'):
-                params["coef"] = model.coef_.tolist()
-            if hasattr(model, 'intercept_'):
-                params["intercept"] = model.intercept_.tolist()
-            
             model_parameters.append(params)
+        
+        # Get meta-learner parameters
+        meta_model_params = {
+            "meta_model_type": type(self.meta_model).__name__,
+            "meta_model_params": self.meta_model.get_params() if hasattr(self.meta_model, 'get_params') else {}
+        }
         
         # Create ensemble state
         ensemble_state = {
             "model_parameters": model_parameters,
             "weights": self.best_weights.tolist(),
+            "meta_model": meta_model_params,
             "model_names": self.model_names
         }
         
@@ -212,27 +257,20 @@ class GAStackingPipeline:
             return 0.0
         
         # Generate meta-features
-        meta_X_train = np.column_stack([
-            model.predict_proba(X_train)[:, 1]
-            for model in self.trained_base_models.values()
-        ])
-        
-        meta_X_val = np.column_stack([
-            model.predict_proba(X_val)[:, 1]
-            for model in self.trained_base_models.values()
-        ])
+        meta_X_train = predict_meta_features(self.trained_base_models, X_train)
+        meta_X_val = predict_meta_features(self.trained_base_models, X_val)
         
         # Make ensemble predictions
-        train_preds = ensemble_predict(meta_X_train, self.best_weights)
-        val_preds = ensemble_predict(meta_X_val, self.best_weights)
+        train_preds = meta_X_train.dot(self.best_weights)
+        val_preds = meta_X_val.dot(self.best_weights)
         
         # Calculate AUC
-        train_auc = roc_auc_score(y_train, train_preds)
-        val_auc = roc_auc_score(y_val, val_preds)
+        train_f1 = f1_score(y_train, train_preds >0.5, pos_label=1)
+        val_f1 = f1_score(y_val, val_preds >0.5, pos_label=1)
         
         # Calculate generalization score
         # Lower difference between train and val is better
-        diff = abs(train_auc - val_auc)
+        diff = abs(train_f1 - val_f1)
         
         # Return a score between 0 and 1 where higher is better
         return max(0, 1.0 - diff)

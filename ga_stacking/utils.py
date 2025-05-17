@@ -4,6 +4,7 @@ Module: utils
 General helper functions: data splitting, model training, predictions, metrics.
 """
 import numpy as np
+from joblib import Parallel, delayed
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import RobustScaler
 from imblearn.over_sampling import SMOTE
@@ -12,6 +13,7 @@ from sklearn.metrics import (
     roc_auc_score, classification_report
 )
 from sklearn.base import clone
+from joblib import Parallel, delayed
 
 from base_models import BASE_MODELS, META_MODELS
 import logging
@@ -44,6 +46,7 @@ def split_and_scale(data, target_col='Class', test_size=0.3, random_state=42):
     # Drop 'Time' column if it exists
     if 'Time' in data.columns:
         data = data.drop(['Time'], axis=1)
+        logger.info(f"Processed DataFrame columns: {data.columns.tolist()}")
     
     # Create feature set by dropping the target column
     X = data.drop([target_col], axis=1)
@@ -63,7 +66,10 @@ def split_and_scale(data, target_col='Class', test_size=0.3, random_state=42):
     X_train_s = scaler.transform(X_train)
     X_val_s = scaler.transform(X_val)
     X_test_s = scaler.transform(X_test)
-    
+   
+    logger.info(f"Data info before SMOTE:")
+    logger.info(f"[BEFORE] Train: {X_train_s.shape}, Validation: {X_val_s.shape}, Test: {X_test_s.shape}")
+
     # Apply SMOTE to handle class imbalance
     try:
         X_train_s, y_train = SMOTE(random_state=random_state).fit_resample(X_train_s, y_train)
@@ -82,17 +88,31 @@ def split_and_scale(data, target_col='Class', test_size=0.3, random_state=42):
     return X_train_s, X_val_s, X_test_s, y_train_np, y_val_np, y_test_np, scaler
 
 
-def train_base_models(X, y, model_dict=BASE_MODELS):
+def train_base_models(X_train, y_train, base_models):
     """
-    Fit each base model on (X, y).
-    Returns list of fitted models.
+    Train all base models with better error handling.
     """
-    models = {}
-    for name, m in model_dict.items():
-        m_clone = clone(m)
-        m_clone.fit(X, y)
-        models[name] = m_clone
-    return models
+    from sklearn.base import clone
+    import numpy as np
+    
+    trained_models = {}
+    
+    for name, model in base_models.items():
+        try:
+            print(f"Training {name}...")
+            model_clone = clone(model)
+            model_clone.fit(X_train, y_train)
+            trained_models[name] = model_clone
+            print(f"{name} trained successfully")
+        except Exception as e:
+            print(f"Error training {name}: {str(e)}")
+            # Skip this model
+    
+    # If no models were successfully trained, raise an error
+    if len(trained_models) == 0:
+        raise ValueError("Failed to train any base models.")
+    
+    return trained_models
 
 
 def ensemble_predict(meta_X: np.ndarray, weights: np.ndarray) -> np.ndarray:
@@ -151,7 +171,6 @@ def evaluate_metrics(y_true, y_proba, threshold=0.5):
         recall = 0.0
     
     # Print metrics for debugging
-    print('AUC :', auc)
     print('F1  :', f1)
     
     try:
