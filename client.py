@@ -37,7 +37,7 @@ from flwr.common import (
 
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score, 
-    roc_auc_score, confusion_matrix
+    confusion_matrix
 )
 
 import numpy as np
@@ -69,6 +69,8 @@ class GAStackingClient(fl.client.NumPyClient):
         self,
         X_train: np.ndarray,
         y_train: np.ndarray,
+        X_val: np.ndarray,
+        y_val: np.ndarray,
         X_test: np.ndarray,
         y_test: np.ndarray,
         ensemble_size: int = 5,
@@ -99,6 +101,8 @@ class GAStackingClient(fl.client.NumPyClient):
         """
         self.X_train = X_train
         self.y_train = y_train
+        self.X_val = X_val
+        self.y_val = y_val
         self.X_test = X_test
         self.y_test = y_test
         self.ensemble_size = ensemble_size
@@ -229,9 +233,193 @@ class GAStackingClient(fl.client.NumPyClient):
             logger.error(f"Failed to save ensemble to IPFS: {str(e)}")
             return None
     
+    # def fit(self, parameters: Parameters, config: Dict[str, Scalar]) -> Tuple[List[np.ndarray], int, Dict[str, Scalar]]:
+    #     """
+    #     Train the model on the local dataset using GA-Stacking.
+    #     Modified to use IPFS exclusively for model transfer.
+    #     """
+    #     # Check if client is authorized (if blockchain is available)
+    #     if self.blockchain and self.wallet_address:
+    #         try:
+    #             is_authorized = self.blockchain.is_client_authorized(self.wallet_address)
+    #             if not is_authorized:
+    #                 logger.warning(f"Client {self.wallet_address} is not authorized to participate")
+    #                 # Return empty parameters with auth failure flag
+    #                 return parameters_to_ndarrays(parameters), 0, {"error": "client_not_authorized"}
+    #         except Exception as e:
+    #             logger.error(f"Failed to check client authorization: {e}")
+    #             # Continue anyway, server will check again
+
+    #     # Get IPFS hash and round number
+    #     ipfs_hash = config.get("ipfs_hash", None)
+    #     round_num = config.get("server_round", 0)
+        
+    #     # Get training config
+    #     do_ga_stacking = bool(config.get("ga_stacking", True))
+    #     validation_split = float(config.get("validation_split", 0.3))
+        
+    #     # Create validation split
+    #     # With just:
+    #     X_train, y_train = self.X_train, self.y_train
+    #     X_val, y_val = self.X_val, self.y_val
+        
+    #     # Run GA-Stacking
+    #     if do_ga_stacking:
+    #         logger.info("Performing GA-Stacking optimization")
+    #         try:
+    #             # Train the GA-Stacking pipeline
+    #             self.ga_results = self.ga_pipeline.train(X_train, y_train, X_val, y_val)
+                
+    #             # Store the ensemble state
+    #             self.ensemble_state = self.ga_pipeline.get_ensemble_state()
+                
+    #             # Extract GA-Stacking metrics - SEND RAW METRICS TO SERVER
+    #             ga_stacking_metrics = {
+    #                 "ensemble_accuracy": self.ga_results["val_metrics"]["accuracy"],
+    #                 "diversity_score": self.ga_results["diversity_score"],
+    #                 "generalization_score": self.ga_results["generalization_score"],
+    #                 "convergence_rate": self.ga_results["convergence_rate"],
+    #                 "avg_base_model_score": self.ga_results.get("avg_base_model_score", 0.0),
+    #             }
+                
+    #             # No score calculation on client side - the server will do this
+    #             logger.info(f"GA-Stacking complete - Accuracy: {ga_stacking_metrics['ensemble_accuracy']:.4f}, "
+    #                     f"Diversity: {ga_stacking_metrics['diversity_score']:.4f}",
+    #                     f"Generalization: {ga_stacking_metrics['generalization_score']:.4f}, "
+    #                     f"Convergence: {ga_stacking_metrics['convergence_rate']:.4f}",
+    #                     f"Avg Base Model Score: {ga_stacking_metrics['avg_base_model_score']:.4f}")
+                
+                
+    #         except Exception as e:
+    #             logger.error(f"Error in GA-Stacking: {str(e)}")
+    #             # Fallback to simple ensemble
+    #             ga_stacking_metrics = {
+    #                 "ensemble_accuracy": 0.0,
+    #                 "diversity_score": 0.0,
+    #                 "generalization_score": 0.0,
+    #                 "convergence_rate": 0.5,
+    #                 "avg_base_model_score": 0.0
+    #             }
+    #     else:
+    #         logger.info("Skipping GA-Stacking as requested in config")
+    #         ga_stacking_metrics = {
+    #             "ensemble_accuracy": 0.0,
+    #             "diversity_score": 0.0,
+    #             "generalization_score": 0.0,
+    #             "convergence_rate": 0.5,
+    #             "avg_base_model_score": 0.0
+    #         }
+
+    #     # Evaluate on test data
+    #     # If we have a trained pipeline, use it for evaluation
+    #     if hasattr(self, 'ga_pipeline') and self.ga_pipeline is not None and hasattr(self.ga_pipeline, 'predict'):
+
+    #         y_pred = self.ga_pipeline.predict(self.X_test)
+    #         test_metrics = evaluate_metrics(self.y_test, y_pred)
+            
+    #         accuracy = test_metrics['accuracy'] * 100.0
+    #         loss = 1.0 - test_metrics['precision']  # Use 1 - precision as loss
+            
+    #         metrics = {
+    #             "loss": float(loss),
+    #             "accuracy": float(accuracy),
+    #             "precision": float(test_metrics['precision']),
+    #             "recall": float(test_metrics['recall']),
+    #             "f1_score": float(test_metrics['f1'])
+    #         }
+    #     else:
+    #         # Fallback if pipeline isn't trained
+    #         accuracy, loss = 0.0, float('inf')
+    #         metrics = {
+    #             "loss": float(loss),
+    #             "accuracy": 0.0,
+    #             "precision": 0.0,
+    #             "recall": 0.0,
+    #             "f1_score": 0.0
+    #         }
+
+    #     # Save ensemble to IPFS - ONLY MODEL TRANSFER METHOD
+    #     client_ipfs_hash = None
+    #     try:
+    #         # Create metadata with ensemble state
+    #         model_metadata = {
+    #             "ensemble_state": self.ensemble_state,
+    #             "info": {
+    #                 "round": round_num,
+    #                 "client_id": self.client_id,
+    #                 "wallet_address": self.wallet_address if self.wallet_address else "unknown",
+    #                 "timestamp": datetime.now(timezone.utc).isoformat(),
+    #                 "ensemble_size": len(self.ensemble_state.get("model_names", [])),
+    #                 "weights": self.ensemble_state.get("weights", []),
+    #                 "metrics": metrics
+    #             }
+    #         }
+            
+    #         # Store in IPFS with retries
+    #         for attempt in range(3):  # Try up to 3 times
+    #             try:
+    #                 client_ipfs_hash = self.ipfs.add_json(model_metadata)
+    #                 if client_ipfs_hash:
+    #                     logger.info(f"Stored ensemble model in IPFS: {client_ipfs_hash}")
+    #                     break
+    #                 else:
+    #                     logger.warning(f"Failed to get valid IPFS hash (attempt {attempt+1}/3)")
+    #                     time.sleep(1)  # Wait before retry
+    #             except Exception as retry_err:
+    #                 logger.warning(f"IPFS storage attempt {attempt+1}/3 failed: {retry_err}")
+    #                 time.sleep(2)  # Wait longer before retry
+                
+    #         if not client_ipfs_hash:
+    #             raise ValueError("Failed to get valid IPFS hash after multiple attempts")
+                
+    #     except Exception as e:
+    #         logger.error(f"Failed to save ensemble to IPFS: {str(e)}")
+    #         # If IPFS fails, we have no model to return - this is critical in IPFS-only mode
+    #         # Return a flag indicating IPFS failure
+    #         dummy_parameters = parameters_to_ndarrays(parameters)
+    #         return dummy_parameters, 0, {"error": "ipfs_storage_failed", "message": str(e)}
+
+    #     # Add to metrics history
+    #     self.metrics_history.append({
+    #         "round": round_num,
+    #         "fit_loss": float(loss),
+    #         "accuracy": float(accuracy),
+    #         "ipfs_hash": client_ipfs_hash,
+    #         "wallet_address": self.wallet_address if self.wallet_address else "unknown",
+    #         "timestamp": datetime.now(timezone.utc).isoformat(),
+    #         "ga_stacking_metrics": ga_stacking_metrics
+    #     })
+
+    #     # Include additional info in metrics
+    #     metrics["ipfs_hash"] = ipfs_hash  # Return the server's hash for tracking
+    #     metrics["client_ipfs_hash"] = client_ipfs_hash  # This is now the only way server gets model
+    #     metrics["wallet_address"] = self.wallet_address if self.wallet_address else "unknown"
+    #     metrics["ensemble_size"] = len(self.ensemble_state.get("model_names", [])) if (hasattr(self, 'ensemble_state') and self.ensemble_state is not None) else 0
+    #     metrics["model_transfer_mode"] = "ipfs_only"  # Flag to inform server we're using IPFS-only mode
+        
+    #     # Add GA-Stacking raw metrics to the returned metrics WITHOUT score calculation
+    #     for key, value in ga_stacking_metrics.items():
+    #         metrics[key] = value
+
+    #     # Instead of sending actual model parameters, send a minimal placeholder
+    #     # The server will use the IPFS hash to retrieve the actual model
+    #     placeholder_parameters = [np.array([ord('I'), ord('P'), ord('F'), ord('S')], dtype=np.uint8)]
+
+    #     # Get number of training samples
+    #     num_samples = len(self.X_train)
+
+    #     # Make sure metrics only contains serializable values
+    #     for key in list(metrics.keys()):
+    #         if not isinstance(metrics[key], (int, float, str, bool, list)):
+    #             metrics[key] = str(metrics[key])
+
+    #     # Return placeholder parameters - the real model is in IPFS
+    #     return placeholder_parameters, num_samples, metrics
+    
     def fit(self, parameters: Parameters, config: Dict[str, Scalar]) -> Tuple[List[np.ndarray], int, Dict[str, Scalar]]:
         """
         Train the model on the local dataset using GA-Stacking.
+        Modified to handle different rounds: full training in round 1, fine-tuning in later rounds.
         """
         # Check if client is authorized (if blockchain is available)
         if self.blockchain and self.wallet_address:
@@ -248,37 +436,103 @@ class GAStackingClient(fl.client.NumPyClient):
         # Get IPFS hash and round number
         ipfs_hash = config.get("ipfs_hash", None)
         round_num = config.get("server_round", 0)
-
+        
         # Get training config
         do_ga_stacking = bool(config.get("ga_stacking", True))
         validation_split = float(config.get("validation_split", 0.3))
         
         # Create validation split
-        try:
-            # Combine training and test data into a single DataFrame for splitting
-            data = pd.DataFrame(self.X_train, columns=[f"feature_{i}" for i in range(self.X_train.shape[1])])
-            data["Class"] = self.y_train  # Add the target column
-            logger.info(f"DataFrame columns before preprocessing: {data.columns.tolist()}")
-
-            # Use split_and_scale to split and preprocess the data
-            X_train, X_val, X_test, y_train, y_val, y_test, scaler = split_and_scale(
-                data=data,
-                target_col="Class",  # Adjust if your target column has a different name
-                test_size=validation_split,
-                random_state=42
-            )
-        except Exception as e:
-            logger.error(f"Error during data preprocessing: {e}")
-            raise
+        X_train, y_train = self.X_train, self.y_train
+        X_val, y_val = self.X_val, self.y_val
         
-        # Run GA-Stacking
-        if do_ga_stacking:
-            logger.info("Performing GA-Stacking optimization")
+        # Define base model storage path
+        base_models_path = os.path.join(f"./client_storage/{self.client_id}/base_models")
+        os.makedirs(base_models_path, exist_ok=True)
+        
+        # Different logic for Round 1 vs. later rounds
+        if round_num == 1:
+            # ROUND 1: Full training of base models + GA-Stacking
+            logger.info(f"Round {round_num}: Performing full training of base models + GA-Stacking")
+            
+            if do_ga_stacking:
+                try:
+                    # Train the GA-Stacking pipeline from scratch
+                    self.ga_results = self.ga_pipeline.train(X_train, y_train, X_val, y_val)
+                    
+                    # Store the ensemble state
+                    self.ensemble_state = self.ga_pipeline.get_ensemble_state()
+                    
+                    # Save base models for future rounds
+                    try:
+                        self.ga_pipeline.save_base_models(base_models_path)
+                        logger.info(f"Base models saved for future rounds at {base_models_path}")
+                    except Exception as save_err:
+                        logger.error(f"Failed to save base models: {save_err}")
+                    
+                    # Extract GA-Stacking metrics - SEND RAW METRICS TO SERVER
+                    ga_stacking_metrics = {
+                        "ensemble_accuracy": self.ga_results["val_metrics"]["accuracy"],
+                        "diversity_score": self.ga_results["diversity_score"],
+                        "generalization_score": self.ga_results["generalization_score"],
+                        "convergence_rate": self.ga_results["convergence_rate"],
+                        "avg_base_model_score": self.ga_results.get("avg_base_model_score", 0.0),
+                        "training_mode": "full_training"  # Indicate this was full training
+                    }
+                    
+                    logger.info(f"GA-Stacking complete - Accuracy: {ga_stacking_metrics['ensemble_accuracy']:.4f}, "
+                            f"Diversity: {ga_stacking_metrics['diversity_score']:.4f}, "
+                            f"Generalization: {ga_stacking_metrics['generalization_score']:.4f}, "
+                            f"Convergence: {ga_stacking_metrics['convergence_rate']:.4f}, "
+                            f"Avg Base Model Score: {ga_stacking_metrics['avg_base_model_score']:.4f}")
+                    
+                except Exception as e:
+                    logger.error(f"Error in GA-Stacking full training: {str(e)}")
+                    # Fallback to simple ensemble
+                    ga_stacking_metrics = {
+                        "ensemble_accuracy": 0.0,
+                        "diversity_score": 0.0,
+                        "generalization_score": 0.0,
+                        "convergence_rate": 0.5,
+                        "avg_base_model_score": 0.0,
+                        "training_mode": "full_training_failed"
+                    }
+            else:
+                logger.info("Skipping GA-Stacking as requested in config")
+                ga_stacking_metrics = {
+                    "ensemble_accuracy": 0.0,
+                    "diversity_score": 0.0,
+                    "generalization_score": 0.0,
+                    "convergence_rate": 0.5,
+                    "avg_base_model_score": 0.0,
+                    "training_mode": "skipped"
+                }
+        else:
+            # ROUNDS 2-N: Fine-tuning with existing base models
+            logger.info(f"Round {round_num}: Fine-tuning existing base models")
+            
             try:
-                # Train the GA-Stacking pipeline
-                self.ga_results = self.ga_pipeline.train(X_train, y_train, X_val, y_val)
+                # Load base models from storage
+                loaded_models = self.ga_pipeline.load_base_models(base_models_path)
+                logger.info(f"Loaded {len(loaded_models)} base models for fine-tuning")
                 
-                # Store the ensemble state
+                # Extract weights from parameters if available (server aggregated weights)
+                server_weights = None
+                if len(parameters_to_ndarrays(parameters)) > 0 and not np.array_equal(parameters_to_ndarrays(parameters)[0], np.array([ord('I'), ord('P'), ord('F'), ord('S')], dtype=np.uint8)):
+                    try:
+                        # Deserialize weights from parameters
+                        server_weights = parameters_to_ndarrays(parameters)[0]
+                        logger.info(f"Using server-provided weights for fine-tuning")
+                    except Exception as w_err:
+                        logger.warning(f"Could not extract weights from parameters: {w_err}")
+                
+                # Fine-tune the models
+                self.ga_results = self.ga_pipeline.fine_tune(
+                    X_train, y_train, X_val, y_val, 
+                    base_models=loaded_models,
+                    weights=server_weights
+                )
+                
+                # Update ensemble state
                 self.ensemble_state = self.ga_pipeline.get_ensemble_state()
                 
                 # Extract GA-Stacking metrics
@@ -288,71 +542,57 @@ class GAStackingClient(fl.client.NumPyClient):
                     "generalization_score": self.ga_results["generalization_score"],
                     "convergence_rate": self.ga_results["convergence_rate"],
                     "avg_base_model_score": self.ga_results.get("avg_base_model_score", 0.0),
+                    "training_mode": "fine_tuning"  # Indicate this was fine-tuning
                 }
                 
-                # Calculate final score
-                weights = {
-                    "ensemble_accuracy": 0.40,
-                    "diversity_score": 0.20,
-                    "generalization_score": 0.20,
-                    "convergence_rate": 0.10,
-                    "avg_base_model_score": 0.10
-                }
-                
-                weighted_score = sum(ga_stacking_metrics[key] * weight for key, weight in weights.items())
-                
-                # Apply bonus for exceptional accuracy (>90%)
-                if ga_stacking_metrics["ensemble_accuracy"] > 0.9:
-                    bonus = (ga_stacking_metrics["ensemble_accuracy"] - 0.9) * 1.5
-                    weighted_score += bonus
-                    ga_stacking_metrics["accuracy_bonus"] = float(bonus)
-                
-                # Convert to integer score (0-10000)
-                ga_stacking_metrics["final_score"] = int(min(1.0, weighted_score) * 10000)
-                
-                logger.info(f"GA-Stacking complete - Accuracy: {ga_stacking_metrics['ensemble_accuracy']:.4f}, "
+                logger.info(f"Fine-tuning complete - Accuracy: {ga_stacking_metrics['ensemble_accuracy']:.4f}, "
                         f"Diversity: {ga_stacking_metrics['diversity_score']:.4f}, "
-                        f"Final Score: {ga_stacking_metrics['final_score']}")
+                        f"Generalization: {ga_stacking_metrics['generalization_score']:.4f}")
                 
             except Exception as e:
-                logger.error(f"Error in GA-Stacking: {str(e)}")
-                # Fallback to simple ensemble
-                ga_stacking_metrics = {
-                    "ensemble_accuracy": 0.0,
-                    "diversity_score": 0.0,
-                    "generalization_score": 0.0,
-                    "convergence_rate": 0.5,
-                    "avg_base_model_score": 0.0,
-                    "final_score": 0
-                }
-        else:
-            logger.info("Skipping GA-Stacking as requested in config")
-            ga_stacking_metrics = {
-                "ensemble_accuracy": 0.0,
-                "diversity_score": 0.0,
-                "generalization_score": 0.0,
-                "convergence_rate": 0.5,
-                "avg_base_model_score": 0.0,
-                "final_score": 0
-            }
+                logger.error(f"Error in fine-tuning: {str(e)}")
+                # Fallback - try full training if fine-tuning fails
+                try:
+                    logger.warning("Fine-tuning failed, falling back to full training")
+                    self.ga_results = self.ga_pipeline.train(X_train, y_train, X_val, y_val)
+                    self.ensemble_state = self.ga_pipeline.get_ensemble_state()
+                    
+                    # Save models for next time
+                    self.ga_pipeline.save_base_models(base_models_path)
+                    
+                    ga_stacking_metrics = {
+                        "ensemble_accuracy": self.ga_results["val_metrics"]["accuracy"],
+                        "diversity_score": self.ga_results["diversity_score"],
+                        "generalization_score": self.ga_results["generalization_score"],
+                        "convergence_rate": self.ga_results["convergence_rate"],
+                        "avg_base_model_score": self.ga_results.get("avg_base_model_score", 0.0),
+                        "training_mode": "fallback_full_training"  # Indicate fallback to full training
+                    }
+                except Exception as fallback_err:
+                    logger.error(f"Fallback to full training also failed: {fallback_err}")
+                    ga_stacking_metrics = {
+                        "ensemble_accuracy": 0.0,
+                        "diversity_score": 0.0,
+                        "generalization_score": 0.0,
+                        "convergence_rate": 0.5,
+                        "avg_base_model_score": 0.0,
+                        "training_mode": "training_failed"
+                    }
 
-        # Evaluate on test data
-        # If we have a trained pipeline, use it for evaluation
+        # Evaluate on test data if we have a trained pipeline
         if hasattr(self, 'ga_pipeline') and self.ga_pipeline is not None and hasattr(self.ga_pipeline, 'predict'):
-
             y_pred = self.ga_pipeline.predict(self.X_test)
             test_metrics = evaluate_metrics(self.y_test, y_pred)
             
             accuracy = test_metrics['accuracy'] * 100.0
-            loss = 1.0 - test_metrics['auc']  # Use 1-AUC as a loss
+            loss = 1.0 - test_metrics['precision']  # Use 1 - precision as loss
             
             metrics = {
                 "loss": float(loss),
                 "accuracy": float(accuracy),
                 "precision": float(test_metrics['precision']),
                 "recall": float(test_metrics['recall']),
-                "f1_score": float(test_metrics['f1']),
-                "auc_roc": float(test_metrics['auc']),
+                "f1_score": float(test_metrics['f1'])
             }
         else:
             # Fallback if pipeline isn't trained
@@ -362,13 +602,13 @@ class GAStackingClient(fl.client.NumPyClient):
                 "accuracy": 0.0,
                 "precision": 0.0,
                 "recall": 0.0,
-                "f1_score": 0.0,
-                "auc_roc": 0.5,
+                "f1_score": 0.0
             }
 
         # Save ensemble to IPFS
+        client_ipfs_hash = None
         try:
-            # Create metadata
+            # Create metadata with ensemble state and round info
             model_metadata = {
                 "ensemble_state": self.ensemble_state,
                 "info": {
@@ -378,16 +618,34 @@ class GAStackingClient(fl.client.NumPyClient):
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "ensemble_size": len(self.ensemble_state.get("model_names", [])),
                     "weights": self.ensemble_state.get("weights", []),
-                    "metrics": metrics
+                    "metrics": metrics,
+                    "training_mode": ga_stacking_metrics.get("training_mode", "unknown")
                 }
             }
             
-            # Store in IPFS
-            client_ipfs_hash = self.ipfs.add_json(model_metadata)
-            logger.info(f"Stored ensemble model in IPFS: {client_ipfs_hash}")
+            # Store in IPFS with retries
+            for attempt in range(3):  # Try up to 3 times
+                try:
+                    client_ipfs_hash = self.ipfs.add_json(model_metadata)
+                    if client_ipfs_hash:
+                        logger.info(f"Stored ensemble model in IPFS: {client_ipfs_hash}")
+                        break
+                    else:
+                        logger.warning(f"Failed to get valid IPFS hash (attempt {attempt+1}/3)")
+                        time.sleep(1)  # Wait before retry
+                except Exception as retry_err:
+                    logger.warning(f"IPFS storage attempt {attempt+1}/3 failed: {retry_err}")
+                    time.sleep(2)  # Wait longer before retry
+                
+            if not client_ipfs_hash:
+                raise ValueError("Failed to get valid IPFS hash after multiple attempts")
+                
         except Exception as e:
             logger.error(f"Failed to save ensemble to IPFS: {str(e)}")
-            client_ipfs_hash = None
+            # If IPFS fails, we have no model to return - this is critical in IPFS-only mode
+            # Return a flag indicating IPFS failure
+            dummy_parameters = parameters_to_ndarrays(parameters)
+            return dummy_parameters, 0, {"error": "ipfs_storage_failed", "message": str(e)}
 
         # Add to metrics history
         self.metrics_history.append({
@@ -397,39 +655,40 @@ class GAStackingClient(fl.client.NumPyClient):
             "ipfs_hash": client_ipfs_hash,
             "wallet_address": self.wallet_address if self.wallet_address else "unknown",
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "ga_stacking_metrics": ga_stacking_metrics
+            "ga_stacking_metrics": ga_stacking_metrics,
+            "training_mode": ga_stacking_metrics.get("training_mode", "unknown")
         })
 
         # Include additional info in metrics
         metrics["ipfs_hash"] = ipfs_hash  # Return the server's hash for tracking
-        metrics["client_ipfs_hash"] = client_ipfs_hash
+        metrics["client_ipfs_hash"] = client_ipfs_hash  # This is now the only way server gets model
         metrics["wallet_address"] = self.wallet_address if self.wallet_address else "unknown"
         metrics["ensemble_size"] = len(self.ensemble_state.get("model_names", [])) if (hasattr(self, 'ensemble_state') and self.ensemble_state is not None) else 0
+        metrics["model_transfer_mode"] = "ipfs_only"  # Flag to inform server we're using IPFS-only mode
+        metrics["training_mode"] = ga_stacking_metrics.get("training_mode", "unknown")
         
-        # Add GA-Stacking specific metrics to the returned metrics
+        # Add GA-Stacking raw metrics to the returned metrics WITHOUT score calculation
         for key, value in ga_stacking_metrics.items():
             metrics[key] = value
+            
+        for key, value in metrics.items():
+            if value is None:
+                logger.warning(f"Found None value for metric '{key}'")
 
-        # Get the ensemble parameters
-        try:
-            # Serialize ensemble state to JSON and convert to ndarray
-            ensemble_bytes = json.dumps(self.ensemble_state).encode('utf-8')
-            parameters_updated = [np.array(list(ensemble_bytes), dtype=np.uint8)]
-
-        except Exception as e:
-            logger.error(f"Error getting parameters: {str(e)}")
-            parameters_updated = parameters_to_ndarrays(parameters)  # Return original parameters
-
-        # Get number of training samples
-        num_samples = len(self.X_train)
-
-        # Make sure metrics only contains serializable values
-        for key in list(metrics.keys()):
-            if not isinstance(metrics[key], (int, float, str, bool, list)):
-                metrics[key] = str(metrics[key])
-
-        # Return the raw parameters (not wrapped in Flower Parameters)
-        return parameters_updated, num_samples, metrics
+        # For non-round 1, return the actual weights for server aggregation
+        # For round 1, just use placeholder
+        if round_num == 1:
+            placeholder_parameters = [np.array([ord('I'), ord('P'), ord('F'), ord('S')], dtype=np.uint8)]
+            return placeholder_parameters, len(self.X_train), metrics
+        else:
+            # Return actual weights for aggregation
+            if hasattr(self, 'ensemble_state') and self.ensemble_state is not None and "weights" in self.ensemble_state:
+                weights_array = np.array(self.ensemble_state["weights"])
+                return [weights_array], len(self.X_train), metrics
+            else:
+                # Fallback to placeholder if no weights available
+                placeholder_parameters = [np.array([ord('I'), ord('P'), ord('F'), ord('S')], dtype=np.uint8)]
+                return placeholder_parameters, len(self.X_train), metrics
     
     def evaluate(self, parameters: Parameters, config: Dict[str, Scalar]) -> Tuple[float, int, Dict[str, Scalar]]:
         """
@@ -479,7 +738,6 @@ class GAStackingClient(fl.client.NumPyClient):
                 "precision": 0.0,
                 "recall": 0.0,
                 "f1_score": 0.0,
-                "auc_roc": 0.5,
                 "wallet_address": self.wallet_address if self.wallet_address else "unknown",
                 "model_status": "not_trained"
             }
@@ -490,8 +748,8 @@ class GAStackingClient(fl.client.NumPyClient):
             test_metrics = evaluate_metrics(self.y_test, y_pred)
             
             accuracy = test_metrics['accuracy'] * 100.0
-            loss = 1.0 - test_metrics['auc']  # Use 1-AUC as a loss
-            
+            loss = 1.0 - test_metrics['f1']
+                        
             # Calculate confusion matrix components
             threshold = 0.3  # Adjust based on your use case
             y_pred_labels = (y_pred > threshold).astype(int)
@@ -517,7 +775,6 @@ class GAStackingClient(fl.client.NumPyClient):
                 "precision": float(test_metrics['precision']),
                 "recall": float(test_metrics['recall']),
                 "f1_score": float(test_metrics['f1']),
-                "auc_roc": float(test_metrics['auc']),
                 "wallet_address": self.wallet_address if self.wallet_address else "unknown",
                 "ensemble_size": len(self.ensemble_state.get("model_names", [])) if hasattr(self, 'ensemble_state') else 0,
                 
@@ -547,7 +804,6 @@ class GAStackingClient(fl.client.NumPyClient):
                 "precision": float(test_metrics['precision']),
                 "recall": float(test_metrics['recall']),
                 "f1_score": float(test_metrics['f1']),
-                "auc_roc": float(test_metrics['auc']),
                 "eval_samples": len(self.X_test),
                 "ipfs_hash": ipfs_hash,
                 "wallet_address": self.wallet_address if self.wallet_address else "unknown",
@@ -564,7 +820,6 @@ class GAStackingClient(fl.client.NumPyClient):
                 "precision": 0.0,
                 "recall": 0.0,
                 "f1_score": 0.0,
-                "auc_roc": 0.5,
                 "wallet_address": self.wallet_address if self.wallet_address else "unknown",
                 "error": str(e),
                 "model_status": "error"
@@ -628,8 +883,9 @@ def load_csv_dataset(csv_file_path: str, target_col: str = "Class") -> pd.DataFr
         raise
 
 
+
 def start_client(
-    server_address: str = "127.0.0.1:8080",
+    server_address: str = "192.168.80.180:8088",
     ipfs_url: str = "http://127.0.0.1:5001",
     ganache_url: str = "http://127.0.0.1:7545",
     contract_address: Optional[str] = None,
@@ -754,10 +1010,10 @@ def start_client(
         
         # For client interface, combine train and validation for X_train, y_train
         # The client's fit() method will split them again for GA-Stacking
-        X_train_combined = np.vstack([X_train, X_val])
-        y_train_combined = np.concatenate([y_train, y_val])
+        #X_train_combined = np.vstack([X_train, X_val])
+        #y_train_combined = np.concatenate([y_train, y_val])
         
-        logger.info(f"Combined training set: {X_train_combined.shape[0]} samples")
+        #logger.info(f"Combined training set: {X_train_combined.shape[0]} samples")
         
     except Exception as e:
         logger.error(f"Error during data preparation: {e}")
@@ -765,8 +1021,10 @@ def start_client(
     
     # Create client
     client = GAStackingClient(
-        X_train=X_train_combined,
-        y_train=y_train_combined,
+        X_train=X_train,
+        y_train=y_train,
+        X_val=X_val,
+        y_val=y_val,
         X_test=X_test,
         y_test=y_test,
         ensemble_size=ensemble_size,
@@ -786,13 +1044,14 @@ def start_client(
     client.save_metrics_history(filepath=f"metrics/{client_id}/metrics_history.json")
     
     logger.info(f"Client {client_id} completed federated learning with GA-Stacking")
+ 
     
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Start FL client with GA-Stacking ensemble optimization")
-    parser.add_argument("--server-address", type=str, default="127.0.0.1:8088", help="Server address (host:port)")
+    parser.add_argument("--server-address", type=str, default="192.168.80.180:8088", help="Server address (host:port)")
     parser.add_argument("--ipfs-url", type=str, default="http://127.0.0.1:5001/api/v0", help="IPFS API URL")
-    parser.add_argument("--ganache-url", type=str, default="http://192.168.1.146:7545", help="Ganache blockchain URL")
+    parser.add_argument("--ganache-url", type=str, default="http://192.168.80.1:7545", help="Ganache blockchain URL")
     parser.add_argument("--contract-address", type=str, help="Address of deployed EnhancedModelRegistry contract")
     parser.add_argument("--wallet-address", type=str, help="Client's Ethereum wallet address")
     parser.add_argument("--private-key", type=str, help="Client's private key (for signing transactions)")

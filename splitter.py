@@ -4,7 +4,7 @@ import os
 from sklearn.model_selection import train_test_split
 
 # ==== Cấu hình trực tiếp trong file ====
-NUM_CLIENTS = 5
+NUM_CLIENTS =9 
 SEED = 42
 DATA_PATH = "data"  # Thư mục chứa creditcard.csv
 VERBOSE = True
@@ -51,7 +51,7 @@ df = pd.read_csv(f"{DATA_PATH}/creditcard.csv")
 
 # Chọn 1 trong 2 phương pháp chia:
 clients_data = split_dataset_iid(df)  # IID
-# clients_data = split_dataset_noniid_label_skew(df, label_col="Class")  # non-IID
+#clients_data = split_dataset_noniid_label_skew(df, label_col="Class")  # non-IID
 
 # Lưu thành từng file
 save_client_datasets(clients_data)

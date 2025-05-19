@@ -1,92 +1,31 @@
 [
   {
     "round": 1,
-    "fit_loss": 0.0014506132137676042,
-    "accuracy": 97.60400210637178,
-    "ipfs_hash": "QmW3n562rYrGV1KmZMRKpdLMUsCnpJGWbk4eYpAQPXFHCu",
-    "wallet_address": "0x73CDd275BeB83388A2eB8A6b10C5E1Db7b1f1e0b",
-    "timestamp": "2025-05-15T19:13:59.720516+00:00",
+    "fit_loss": 0.4285714285714285,
+    "accuracy": 99.7946611909651,
+    "ipfs_hash": "QmeeUQXoVW9oYz4rWwuWQuXHvQ7RhckSfEyFFLa7jdceNE",
+    "wallet_address": "0x888b72fA86F4277b632Bd03C54e2B7a5d524E031",
+    "timestamp": "2025-05-18T02:52:04.831939+00:00",
     "ga_stacking_metrics": {
-      "ensemble_accuracy": 0.9992087355594239,
-      "diversity_score": 0.011997076089495776,
-      "generalization_score": 0.9999842471302184,
-      "convergence_rate": 1.0,
+      "ensemble_accuracy": 0.9986301369863013,
+      "diversity_score": 0.0022178734507501637,
+      "generalization_score": 0.999885662016922,
+      "convergence_rate": 0.6666666666666667,
       "avg_base_model_score": 0.0,
-      "accuracy_bonus": 0.14881310333913583,
-      "final_score": 8508
+      "accuracy_bonus": 0.14794520547945195,
+      "final_score": 8144
     }
   },
   {
     "round": 1,
-    "eval_loss": 0.0014506132137676042,
-    "accuracy": 97.60400210637178,
-    "precision": 0.06666666666666667,
-    "recall": 1.0,
-    "f1_score": 0.125,
-    "auc_roc": 0.9985493867862324,
-    "eval_samples": 7596,
-    "ipfs_hash": "QmP4ZyWcA8U6v7K6DKhTyqyKVPetdJXbhrLPcGrgPrZiwy",
-    "wallet_address": "0x73CDd275BeB83388A2eB8A6b10C5E1Db7b1f1e0b",
-    "timestamp": "2025-05-15T19:14:05.352681+00:00"
-  },
-  {
-    "round": 2,
-    "fit_loss": 0.010570202578642496,
-    "accuracy": 95.19483938915218,
-    "ipfs_hash": "QmbFDAEdLwteRJf81Smt8dqnAryiYH9f8NJR6M4MzScHvf",
-    "wallet_address": "0x73CDd275BeB83388A2eB8A6b10C5E1Db7b1f1e0b",
-    "timestamp": "2025-05-15T19:38:39.554001+00:00",
-    "ga_stacking_metrics": {
-      "ensemble_accuracy": 0.9992087355594239,
-      "diversity_score": 0.011997076089495776,
-      "generalization_score": 0.9999779317043486,
-      "convergence_rate": 1.0,
-      "avg_base_model_score": 0.0,
-      "accuracy_bonus": 0.14881310333913583,
-      "final_score": 8508
-    }
-  },
-  {
-    "round": 2,
-    "eval_loss": 0.010570202578642496,
-    "accuracy": 95.19483938915218,
-    "precision": 0.03439153439153439,
-    "recall": 1.0,
-    "f1_score": 0.06649616368286444,
-    "auc_roc": 0.9894297974213575,
-    "eval_samples": 7596,
-    "ipfs_hash": "QmX3ud3jZAWrtcnjtZpxQEPA9ukAJPRvBZVxqw2fxLYNPs",
-    "wallet_address": "0x73CDd275BeB83388A2eB8A6b10C5E1Db7b1f1e0b",
-    "timestamp": "2025-05-15T19:38:44.859622+00:00"
-  },
-  {
-    "round": 3,
-    "fit_loss": 0.008216760161900538,
-    "accuracy": 92.4565560821485,
-    "ipfs_hash": "Qmb8EyqhxJ6K6GxWtxeNWJpZReo2wnnoePJpLNk1nU1mFo",
-    "wallet_address": "0x73CDd275BeB83388A2eB8A6b10C5E1Db7b1f1e0b",
-    "timestamp": "2025-05-15T20:03:18.021169+00:00",
-    "ga_stacking_metrics": {
-      "ensemble_accuracy": 0.9992087355594239,
-      "diversity_score": 0.011997076089495776,
-      "generalization_score": 0.9999714040261927,
-      "convergence_rate": 0.5,
-      "avg_base_model_score": 0.0,
-      "accuracy_bonus": 0.14881310333913583,
-      "final_score": 8008
-    }
-  },
-  {
-    "round": 3,
-    "eval_loss": 0.008216760161900538,
-    "accuracy": 92.4565560821485,
-    "precision": 0.02218430034129693,
-    "recall": 1.0,
-    "f1_score": 0.04340567612687813,
-    "auc_roc": 0.9917832398380995,
-    "eval_samples": 7596,
-    "ipfs_hash": "QmTZxjzyoD4JgNQANL1okfcErcqC8ipiZXkEo14iH6Smdd",
-    "wallet_address": "0x73CDd275BeB83388A2eB8A6b10C5E1Db7b1f1e0b",
-    "timestamp": "2025-05-15T20:03:23.245077+00:00"
+    "eval_loss": 0.4285714285714285,
+    "accuracy": 99.7946611909651,
+    "precision": 0.5,
+    "recall": 0.6666666666666666,
+    "f1_score": 0.5714285714285715,
+    "eval_samples": 1461,
+    "ipfs_hash": "QmSHZ36FEpxcDY3sFFsm2apPPkXUAjfjnHzpbfAmE26n5z",
+    "wallet_address": "0x888b72fA86F4277b632Bd03C54e2B7a5d524E031",
+    "timestamp": "2025-05-18T02:52:13.536450+00:00"
   }
 ]

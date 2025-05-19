@@ -26,7 +26,7 @@ class BlockchainConnector:
     
     def __init__(
         self, 
-        ganache_url: str = "http://192.168.1.146:7545",
+        ganache_url: str = "http://192.168.80.1:7545",
         contract_address: Optional[str] = None,
         private_key: Optional[str] = None,
         contract_path: Optional[str] = None

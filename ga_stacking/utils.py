@@ -12,6 +12,7 @@ from sklearn.metrics import (
     roc_auc_score, classification_report
 )
 from sklearn.base import clone
+from joblib import Parallel, delayed
 
 from base_models import BASE_MODELS, META_MODELS
 import logging
@@ -64,6 +65,9 @@ def split_and_scale(data, target_col='Class', test_size=0.3, random_state=42):
     X_val_s = scaler.transform(X_val)
     X_test_s = scaler.transform(X_test)
     
+    logger.info(f"Data info before SMOTE:")
+    logger.info(f"[BEFORE] Train: {X_train_s.shape}, Validation: {X_val_s.shape}, Test: {X_test_s.shape}")
+
     # Apply SMOTE to handle class imbalance
     try:
         X_train_s, y_train = SMOTE(random_state=random_state).fit_resample(X_train_s, y_train)
@@ -82,17 +86,29 @@ def split_and_scale(data, target_col='Class', test_size=0.3, random_state=42):
     return X_train_s, X_val_s, X_test_s, y_train_np, y_val_np, y_test_np, scaler
 
 
-def train_base_models(X, y, model_dict=BASE_MODELS):
+def train_base_models(X, y, model_dict=BASE_MODELS, n_jobs: int = -1):
     """
-    Fit each base model on (X, y).
-    Returns list of fitted models.
+    Huấn luyện song song các base models trên (X, y).
+    
+    Args:
+        X, y: Dữ liệu train
+        model_dict: dict tên -> mô hình chưa huấn luyện
+        n_jobs: số luồng song song (default: -1 = tất cả CPU cores)
+    
+    Returns:
+        models: dict tên -> mô hình đã huấn luyện
     """
-    models = {}
-    for name, m in model_dict.items():
-        m_clone = clone(m)
+
+    def fit_model(name, model):
+        m_clone = clone(model)
         m_clone.fit(X, y)
-        models[name] = m_clone
-    return models
+        return name, m_clone
+
+    results = Parallel(n_jobs=n_jobs)(
+        delayed(fit_model)(name, model) for name, model in model_dict.items()
+    )
+
+    return {name: model for name, model in results}
 
 
 def ensemble_predict(meta_X: np.ndarray, weights: np.ndarray) -> np.ndarray:
@@ -121,12 +137,6 @@ def evaluate_metrics(y_true, y_proba, threshold=0.5):
     # Convert probabilities to binary predictions
     y_pred = (y_proba >= threshold).astype(int)
     
-    # Calculate metrics with error handling
-    try:
-        auc = roc_auc_score(y_true, y_proba)
-    except Exception:
-        auc = 0.5  # Default AUC value for failure cases
-    
     try:
         f1 = f1_score(y_true, y_pred)
     except Exception:
@@ -151,7 +161,6 @@ def evaluate_metrics(y_true, y_proba, threshold=0.5):
         recall = 0.0
     
     # Print metrics for debugging
-    print('AUC :', auc)
     print('F1  :', f1)
     
     try:
@@ -163,7 +172,6 @@ def evaluate_metrics(y_true, y_proba, threshold=0.5):
     
     # Create metrics dictionary
     metrics = {
-        'auc': float(auc),
         'f1': float(f1),
         'accuracy': float(accuracy),
         'precision': float(precision),
