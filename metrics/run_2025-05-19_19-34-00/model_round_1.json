@@ -1,0 +1,45 @@
+{
+  "ensemble_state": {
+    "model_names": [
+      "catboost",
+      "knn",
+      "lgbm",
+      "lr",
+      "rf",
+      "svc",
+      "xgb"
+    ],
+    "weights": [
+      0.17740482918512526,
+      0.09664270168937696,
+      0.07569718341587013,
+      0.16163611465966282,
+      0.1894414366865935,
+      0.18121974057196724,
+      0.11795799379140416
+    ],
+    "ga_metadata": {
+      "num_ensembles_aggregated": 2,
+      "client_weights": [
+        0.4998571020291512,
+        0.5001428979708488
+      ]
+    }
+  },
+  "info": {
+    "round": 1,
+    "timestamp": "2025-05-18T07:59:45.948386+00:00",
+    "version": "1.0.0518-5084.1",
+    "is_ensemble": true,
+    "num_models": 7,
+    "model_names": [
+      "catboost",
+      "knn",
+      "lgbm",
+      "lr",
+      "rf",
+      "svc",
+      "xgb"
+    ]
+  }
+}

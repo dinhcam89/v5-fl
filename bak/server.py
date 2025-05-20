@@ -51,113 +51,78 @@ class EnhancedFedAvgWithGA(fl.server.strategy.FedAvg):
     
     def __init__(
         self,
-        *,
-        fraction_fit: float = 1.0,
-        fraction_evaluate: float = 1.0,
-        min_fit_clients: int = 2,
-        min_evaluate_clients: int = 2,
-        min_available_clients: int = 2,
-        authorized_clients_only: bool = True,
-        authorized_clients: Optional[Set[str]] = None,
-        evaluate_fn: Optional[
-            Callable[
-                [int, NDArrays, Dict[str, Scalar]],
-                Optional[Tuple[float, Dict[str, Scalar]]],
-            ]
-        ] = None,
-        on_fit_config_fn: Optional[Callable[[int], Dict[str, Scalar]]] = None,
-        on_evaluate_config_fn: Optional[Callable[[int], Dict[str, Scalar]]] = None,
-        accept_failures: bool = True,
-        initial_parameters: Optional[Parameters] = None,
-        fit_metrics_aggregation_fn: Optional[MetricsAggregationFn] = None,
-        evaluate_metrics_aggregation_fn: Optional[MetricsAggregationFn] = None,
+        *args,
         ipfs_connector: Optional[IPFSConnector] = None,
         blockchain_connector: Optional[BlockchainConnector] = None,
-        ensemble_aggregator: Optional[EnsembleAggregator] = None,
-        reward_system: Optional[GAStackingRewardSystem] = None,
-        device: str = "cpu",
-        federated_round: int = 0,
-        ipfs_validation: bool = True,
         version_prefix: str = "1.0",
-    ) -> None:
+        authorized_clients_only: bool = True,
+        round_rewards: int = 1000,  # Reward points to distribute each round
+        device: str = "cpu",
+        **kwargs,
+    ):
         """Initialize the Enhanced FedAvg with GA strategy."""
-        super().__init__(
-            fraction_fit=fraction_fit,
-            fraction_evaluate=fraction_evaluate,
-            min_fit_clients=min_fit_clients,
-            min_evaluate_clients=min_evaluate_clients,
-            min_available_clients=min_available_clients,
-            evaluate_fn=evaluate_fn,
-            on_fit_config_fn=on_fit_config_fn,
-            on_evaluate_config_fn=on_evaluate_config_fn,
-            accept_failures=accept_failures,
-            initial_parameters=initial_parameters,
-            fit_metrics_aggregation_fn=fit_metrics_aggregation_fn,
-            evaluate_metrics_aggregation_fn=evaluate_metrics_aggregation_fn,
-        )
+        super().__init__(*args, **kwargs)
         
         # Initialize IPFS connector
         self.ipfs = ipfs_connector if ipfs_connector is not None else IPFSConnector()
         
         # Initialize blockchain connector
         self.blockchain = blockchain_connector
-        
-        self.authorized_clients_only = authorized_clients_only
-        self.authorized_clients = authorized_clients if authorized_clients is not None else set()
-        
+                
+        self.base_version_prefix = version_prefix
+
         # Initialize ensemble aggregator
         # NOTE: Removed device parameter here for PyTorch-free implementation
-        self.ensemble_aggregator = ensemble_aggregator if ensemble_aggregator is not None else EnsembleAggregator()
+        self.ensemble_aggregator = EnsembleAggregator()
         
-        # Initialize reward system
-        # With this:
-        if reward_system is not None:
-            self.reward_system = reward_system
-        elif blockchain_connector is not None:
-            try:
-                self.reward_system = GAStackingRewardSystem(blockchain_connector=blockchain_connector)
-                logger.info("Successfully initialized GA-Stacking reward system")
-            except Exception as e:
-                logger.error(f"Failed to initialize GA-Stacking reward system: {e}")
-                self.reward_system = None
-                # Create mock reward system as fallback
-                self.reward_system = self.create_mock_reward_system()
-        else:
-            logger.warning("No blockchain connector available for reward system, using mock")
-            self.reward_system = self.create_mock_reward_system()
+        # Generate session-specific versioning
+        timestamp = int(time.time())
+        self.session_id = timestamp
+        readable_date = datetime.now().strftime("%m%d")
+        # Format: MMDD-last4digits of timestamp
+        self.session_tag = f"{readable_date}-{str(timestamp)[-4:]}"
+        
+        # Create the full version prefix (base.session)
+        self.version_prefix = f"{self.base_version_prefix}.{self.session_tag}"
+        
+        logger.info(f"Initialized with version strategy: base={self.base_version_prefix}, session={self.session_tag}")
+        
+        # Flag to only allow authorized clients
+        self.authorized_clients_only = authorized_clients_only
+        
+        # Rewards per round
+        self.round_rewards = round_rewards
+        
+        # Set of authorized clients from blockchain
+        self.authorized_clients: Set[str] = set()
+        
+        # Client contributions for current round
+        self.current_round_contributions = {}
+        
+        # Metrics storage
+        self.metrics_history = []
+        
+        # Ensemble aggregator
+        self.ensemble_aggregator = EnsembleAggregator()
+        
+        self.reward_system = GAStackingRewardSystem(self.blockchain)
+        
+        # Load authorized clients from blockchain
+        self._load_authorized_clients()
         
         # Set device
         self.device = device
         
-        # Initialize parameters
-        self.current_parameters = initial_parameters
-        self.federated_round = federated_round
-        self.ipfs_validation = ipfs_validation
-        
-        # Track model lifecycle
-        self.model_ipfs_hashes = []
-        self.round_metrics = []
-        
-        # Initialize current round contributions
-        self.current_round_contributions = {}  # Add this line
-        
-        self.client_metrics = {}  # Initialize client metrics
-        self.metrics_history = []  # Initialize metrics history
-        self.session_id = None  # Initialize session ID
-        self.session_tag = None  # Initialize session tag
-        self.base_version_prefix = version_prefix  # Store base version prefix
-        self.version_prefix = version_prefix  # Store version prefix for this session
-        self.federated_round = federated_round  # Store federated round for this session
-        self.ipfs_validation = ipfs_validation  # Store IPFS validation flag for this session
-        self.reward_system = reward_system  # Store reward system for this session
         
         num_rounds = kwargs.get('num_rounds', 3)  # Default to 3 rounds if not specified
         if hasattr(self, "blockchain") and self.blockchain:
             self.initialize_reward_pools(num_rounds)
         
-        logger.info(f"Initialized FedAvg with GA. Device: {self.device}")
-        logger.info(f"IPFS node: {self.ipfs.ipfs_api_url}")
-        logger.info(f"Starting at round: {self.federated_round}")
+        logger.info(f"Initialized EnhancedFedAvgWithGA with IPFS node: {self.ipfs.ipfs_api_url}")
+        if self.blockchain:
+            logger.info(f"Blockchain integration enabled")
+            if self.authorized_clients_only:
+                logger.info(f"Only accepting contributions from authorized clients ({len(self.authorized_clients)} loaded)")
     
     def initialize_reward_pools(self, num_rounds):
         """Initialize reward pools for the specified number of rounds."""
@@ -232,20 +197,50 @@ class EnhancedFedAvgWithGA(fl.server.strategy.FedAvg):
         return ndarrays_to_parameters([np.array([])])
     
     def configure_fit(self, server_round, parameters, client_manager):
-        # Remove complex model parameter passing
-        # Just send round info and basic config
+        """Configure the next round of training with round-specific settings."""
+        # Basic configuration that applies to all rounds
         config = {
             "server_round": server_round,
-            "ga_stacking": True,
-            "local_epochs": 5,
-            "validation_split": 0.2,
             "task_type": "fraud_detection",
             "pos_weight": 99.0,
             "use_f1_score": True,
-            "detection_threshold": 0.3
+            "detection_threshold": 0.3,
+            "ipfs_hash": ""
         }
         
-        # Use empty parameters to reduce payload size - clients initialize their own models
+        # Add round-specific configuration
+        if server_round == 1:
+            # ROUND 1: Full training configuration
+            config.update({
+                "ga_stacking": True,
+                "local_epochs": 10,  # More epochs for initial training
+                "validation_split": 0.3,  # Larger validation split for better GA-Stacking
+                "is_round_1": True,  # Explicit flag for round 1
+                "training_mode": "full_training"  # Indicate full training mode
+            })
+            logger.info("Configuring ROUND 1: Full base model training + GA-Stacking")
+        else:
+            # ROUNDS 2+: Fine-tuning configuration
+            config.update({
+                "ga_stacking": True,  # Still use GA-Stacking but with existing models
+                "local_epochs": max(2, 6 - server_round//2),  # Fewer epochs for fine-tuning, decreasing over time
+                "validation_split": 0.2,  # Smaller validation split for fine-tuning
+                "is_round_1": False,  # Explicit flag that this is not round 1
+                "training_mode": "fine_tuning",  # Indicate fine-tuning mode
+                "fine_tuning_params": {
+                    "learning_rate": 0.001 * (0.9 ** (server_round - 2)),  # Decay learning rate
+                    "reduced_generations": max(5, min(10, 20 - server_round))  # Reduce GA generations over time
+                }
+            })
+            
+            # If we have a global model stored in IPFS, include its hash
+            if hasattr(self, 'global_ipfs_hash') and self.global_ipfs_hash:
+                config["ipfs_hash"] = self.global_ipfs_hash
+                logger.info(f"Configuring ROUND {server_round}: Fine-tuning with global model from IPFS: {self.global_ipfs_hash}")
+            else:
+                logger.info(f"Configuring ROUND {server_round}: Fine-tuning without global model reference")
+        
+        # Use empty parameters to reduce payload size - clients initialize or load their own models
         empty_parameters = ndarrays_to_parameters([np.array([])])
         fit_ins = FitIns(empty_parameters, config)
         
@@ -290,31 +285,49 @@ class EnhancedFedAvgWithGA(fl.server.strategy.FedAvg):
         results: List[Tuple[ClientProxy, FitRes]],
         failures: List[Union[Tuple[ClientProxy, FitRes], BaseException]],
     ) -> Tuple[Optional[Parameters], Dict[str, Scalar]]:
-        """Aggregate model updates from clients."""
+        """Aggregate model updates from clients with support for round-based training workflow."""
 
         # Filter out unauthorized clients
         authorized_results = []
         unauthorized_clients = []
 
         # Initialize GA-Stacking reward system if not already done
-        if not hasattr(self, "reward_system") and hasattr(self, "blockchain"):
-            # Fund the reward pool for this round
-            try:
-                reward_amount = 0.1 + (server_round - 1) * 0.02  # Increase rewards with rounds
-                success, tx_hash = self.reward_system.start_training_round(server_round)
-                if success:
-                    logger.info(f"Funded reward pool for round {server_round} with {reward_amount} ETH")
-                else:
-                    logger.warning(f"Failed to fund reward pool for round {server_round}")
-            except Exception as e:
-                logger.error(f"Error funding reward pool: {e}")
+        # if not hasattr(self, "reward_system") and hasattr(self, "blockchain"):
+        #     # Add pool funding with check for existing pools to prevent duplicate funding
+        #     try:
+        #         # First check if pool already exists and is funded
+        #         pool_info = self.blockchain.get_reward_pool_info(server_round)
+                
+        #         if pool_info and pool_info.get("is_funded", False):
+        #             logger.info(f"Round {server_round} pool already funded with {pool_info.get('amount', 0)} ETH")
+        #         else:
+        #             # Fund new pool if not already funded
+        #             reward_amount = 0.1 + (server_round - 1) * 0.02  # Increase rewards with rounds
+        #             success, tx_hash = self.reward_system.start_training_round(server_round)
+        #             if success:
+        #                 logger.info(f"Funded reward pool for round {server_round} with {reward_amount} ETH")
+        #             else:
+        #                 logger.warning(f"Failed to fund reward pool for round {server_round}")
+        #     except Exception as e:
+        #         logger.error(f"Error funding reward pool: {e}")
 
+        # Process client results
         for client, fit_res in results:
             wallet_address = fit_res.metrics.get("wallet_address", "unknown")
+            training_mode = fit_res.metrics.get("training_mode", "unknown")
+
+            # Log client training mode
+            logger.info(f"Client {wallet_address} used {training_mode} mode")
 
             # Check for auth error flag
             if fit_res.metrics.get("error") == "client_not_authorized":
                 logger.warning(f"Client {wallet_address} reported as unauthorized")
+                unauthorized_clients.append((client, wallet_address))
+                continue
+                
+            # Also check for IPFS storage errors
+            if fit_res.metrics.get("error") == "ipfs_storage_failed":
+                logger.warning(f"Client {wallet_address} failed to store model in IPFS: {fit_res.metrics.get('message', 'unknown error')}")
                 unauthorized_clients.append((client, wallet_address))
                 continue
 
@@ -325,6 +338,21 @@ class EnhancedFedAvgWithGA(fl.server.strategy.FedAvg):
                 # Record contribution metrics for GA-Stacking rewards
                 client_ipfs_hash = fit_res.metrics.get("client_ipfs_hash")
                 
+                # Verify IPFS hash exists before processing
+                if client_ipfs_hash:
+                    try:
+                        # Verify IPFS hash exists
+                        hash_exists = self.ipfs.verify_hash_exists(client_ipfs_hash)
+                        if not hash_exists:
+                            logger.warning(f"IPFS hash {client_ipfs_hash} from client {wallet_address} does not exist or is not accessible")
+                            continue
+                    except Exception as e:
+                        logger.error(f"Error verifying IPFS hash {client_ipfs_hash}: {e}")
+                        continue
+                else:
+                    logger.warning(f"Client {wallet_address} did not provide an IPFS hash")
+                    continue
+                
                 # Collect GA-Stacking metrics for reward calculation
                 ga_metrics = {
                     "ipfs_hash": client_ipfs_hash,
@@ -333,10 +361,10 @@ class EnhancedFedAvgWithGA(fl.server.strategy.FedAvg):
                     "generalization_score": fit_res.metrics.get("generalization_score", 0.0),
                     "convergence_rate": fit_res.metrics.get("convergence_rate", 0.5),
                     "avg_base_model_score": fit_res.metrics.get("avg_base_model_score", 0.0),
-                    "final_score": fit_res.metrics.get("final_score", 0)
+                    "training_mode": training_mode  # Include training mode in metrics
                 }
                 
-                # Store contribution metrics for this round
+                # Store contribution metrics for this round (only if IPFS hash is valid)
                 if client_ipfs_hash and wallet_address != "unknown":
                     self.current_round_contributions[wallet_address] = ga_metrics
             else:
@@ -368,82 +396,281 @@ class EnhancedFedAvgWithGA(fl.server.strategy.FedAvg):
                 any_ensemble = True
                 break
 
-        # Aggregate the updates
+        # Fetch client models from IPFS before aggregation
         if any_ensemble:
-            # Use ensemble aggregation
-            logger.info("Aggregating ensemble models")
-            parameters_aggregated, agg_metrics = self.ensemble_aggregator.aggregate_fit_results(
-                authorized_results, weights
-            )
+            # Check if we're using IPFS or direct parameter exchange
+            using_ipfs = False
+            for _, fit_res in authorized_results:
+                if fit_res.metrics.get("model_transfer_mode") == "ipfs_only":
+                    using_ipfs = True
+                    break
+            
+            if using_ipfs:
+                # IPFS mode - fetch models from IPFS
+                logger.info("Fetching and aggregating ensemble models from IPFS")
+                fetched_models = self.fetch_client_models_from_ipfs(authorized_results)
+                
+                if not fetched_models:
+                    logger.error("Failed to fetch any models from IPFS")
+                    return None, {"error": "ipfs_retrieval_failed"}
+                    
+                # Choose aggregation method based on round
+                if server_round == 1:
+                    parameters_aggregated, agg_metrics = self.ensemble_aggregator.aggregate_ensemble_from_ipfs(
+                        fetched_models, weights[:len(fetched_models)]
+                    )
+                    logger.info(f"Round 1: Aggregated {len(fetched_models)} ensemble models (full training)")
+                else:
+                    # For rounds 2+, use fine-tuning aware aggregation
+                    if hasattr(self.ensemble_aggregator, 'aggregate_fine_tuned_models'):
+                        parameters_aggregated, agg_metrics = self.ensemble_aggregator.aggregate_fine_tuned_models(
+                            fetched_models, weights[:len(fetched_models)], server_round
+                        )
+                    else:
+                        parameters_aggregated, agg_metrics = self.ensemble_aggregator.aggregate_ensemble_from_ipfs(
+                            fetched_models, weights[:len(fetched_models)]
+                        )
+                    logger.info(f"Round {server_round}: Aggregated {len(fetched_models)} ensemble models (fine-tuning)")
+            else:
+                # Direct parameter exchange mode
+                logger.info("Aggregating ensemble models with direct parameter exchange")
+                
+                # Extract ensemble states from parameters
+                ensemble_states = []
+                client_ids = []
+                
+                for client, fit_res in authorized_results:
+                    try:
+                        params = parameters_to_ndarrays(fit_res.parameters)
+                        if len(params) == 1 and params[0].dtype == np.uint8:
+                            ensemble_bytes = params[0].tobytes()
+                            ensemble_state = json.loads(ensemble_bytes.decode('utf-8'))
+                            ensemble_states.append(ensemble_state)
+                            client_ids.append(client.cid)
+                            logger.info(f"Successfully extracted ensemble state from client {client.cid}")
+                    except Exception as e:
+                        logger.error(f"Error extracting ensemble state from client {client.cid}: {e}")
+                
+                if not ensemble_states:
+                    logger.error("No valid ensemble states found in client parameters")
+                    return None, {"error": "no_valid_ensembles"}
+                
+                # Aggregate ensemble states
+                try:
+                    if server_round == 1:
+                        # Standard aggregation for Round 1
+                        aggregated_ensemble = self.ensemble_aggregator.aggregate_ensemble_states(
+                            ensemble_states, weights[:len(ensemble_states)]
+                        )
+                        
+                        agg_metrics = {
+                            "method": "weighted_average",
+                            "num_ensembles": len(ensemble_states),
+                            "num_models": len(aggregated_ensemble.get("model_names", []))
+                        }
+                        
+                        logger.info(f"Round 1: Aggregated {len(ensemble_states)} ensemble models with direct exchange")
+                    else:
+                        # Fine-tuning aware aggregation for Rounds 2+
+                        if hasattr(self.ensemble_aggregator, 'aggregate_fine_tuned_states'):
+                            aggregated_ensemble, agg_metrics = self.ensemble_aggregator.aggregate_fine_tuned_states(
+                                ensemble_states, weights[:len(ensemble_states)], server_round
+                            )
+                        else:
+                            aggregated_ensemble = self.ensemble_aggregator.aggregate_ensemble_states(
+                                ensemble_states, weights[:len(ensemble_states)]
+                            )
+                            
+                            agg_metrics = {
+                                "method": "weighted_average_fine_tuned",
+                                "num_ensembles": len(ensemble_states),
+                                "num_models": len(aggregated_ensemble.get("model_names", []))
+                            }
+                        
+                        logger.info(f"Round {server_round}: Aggregated {len(ensemble_states)} ensemble models with direct exchange (fine-tuning)")
+                    
+                    # Serialize aggregated ensemble to parameters
+                    ensemble_bytes = json.dumps(aggregated_ensemble).encode('utf-8')
+                    parameters_aggregated = ndarrays_to_parameters([np.frombuffer(ensemble_bytes, dtype=np.uint8)])
+                    
+                except Exception as e:
+                    logger.error(f"Error aggregating ensemble states: {e}")
+                    import traceback
+                    logger.error(f"Traceback: {traceback.format_exc()}")
+                    return None, {"error": "ensemble_aggregation_failed"}
         else:
             # Fall back to standard FedAvg
             logger.info("Aggregating standard models")
             parameters_aggregated, metrics = super().aggregate_fit(server_round, authorized_results, failures)
             agg_metrics = metrics
 
+        # After successful aggregation, store the model in IPFS
         if parameters_aggregated is not None:
+            try:
+                # Convert parameters to ensemble state or raw model format
+                params_ndarrays = parameters_to_ndarrays(parameters_aggregated)
+                
+                # Check if it's an ensemble model
+                is_ensemble = len(params_ndarrays) == 1 and params_ndarrays[0].dtype == np.uint8
+                
+                # Store in IPFS with proper format
+                if is_ensemble:
+                    # Handle ensemble model
+                    ensemble_bytes = params_ndarrays[0].tobytes()
+                    ensemble_state = json.loads(ensemble_bytes.decode('utf-8'))
+                    
+                    # Create metadata with ensemble state
+                    model_metadata = {
+                        "ensemble_state": ensemble_state,
+                        "info": {
+                            "round": server_round,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "version": self.get_version(server_round),
+                            "is_ensemble": True,
+                            "num_models": len(ensemble_state.get("model_names", [])),
+                            "model_names": ensemble_state.get("model_names", []),
+                            "training_mode": "full_training" if server_round == 1 else "fine_tuning",
+                            "aggregation_type": "ensemble"
+                        }
+                    }
+                else:
+                    # Handle regular model
+                    # Create state dict from weights
+                    state_dict = {}
+                    layer_names = ["linear.weight", "linear.bias"]  # Adjust based on your model
+                    
+                    for i, name in enumerate(layer_names):
+                        if i < len(params_ndarrays):
+                            state_dict[name] = params_ndarrays[i].tolist()
+                    
+                    # Create metadata
+                    model_metadata = {
+                        "state_dict": state_dict,
+                        "info": {
+                            "round": server_round,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "version": self.get_version(server_round),
+                            "is_ensemble": False,
+                            "training_mode": "full_training" if server_round == 1 else "fine_tuning",
+                            "aggregation_type": "standard"
+                        }
+                    }
+                
+                # Store in IPFS with retry logic
+                ipfs_hash = None
+                for attempt in range(3):  # Try up to 3 times
+                    try:
+                        ipfs_hash = self.ipfs.add_json(model_metadata)
+                        if ipfs_hash:
+                            logger.info(f"Stored aggregated model in IPFS: {ipfs_hash}")
+                            # Store this hash for the next round
+                            self.global_ipfs_hash = ipfs_hash
+                            break
+                        else:
+                            logger.warning(f"Failed to get valid IPFS hash (attempt {attempt+1}/3)")
+                            time.sleep(1)  # Wait before retry
+                    except Exception as retry_err:
+                        logger.warning(f"IPFS storage attempt {attempt+1}/3 failed: {retry_err}")
+                        time.sleep(2)  # Wait longer before retry
+                        
+                if not ipfs_hash:
+                    logger.error("Failed to store aggregated model in IPFS after multiple attempts")
+                    
+                # Register model in blockchain with the correct IPFS hash
+                if ipfs_hash and self.blockchain:
+                    try:
+                        tx_hash = self.blockchain.register_or_update_model(
+                            ipfs_hash=ipfs_hash,
+                            round_num=server_round,
+                            version=self.get_version(server_round),
+                            participating_clients=len(authorized_results),
+                            training_mode="full_training" if server_round == 1 else "fine_tuning"
+                        )
+                        logger.info(f"Registered model in blockchain with hash {ipfs_hash}, tx: {tx_hash}")
+                    except Exception as e:
+                        logger.error(f"Failed to register model in blockchain: {e}")
+            except Exception as e:
+                logger.error(f"Error storing aggregated model: {e}")
+
             # Add metrics about client participation
             agg_metrics["total_clients"] = len(results)
             agg_metrics["authorized_clients"] = len(authorized_results)
             agg_metrics["unauthorized_clients"] = len(unauthorized_clients)
+            agg_metrics["training_mode"] = "full_training" if server_round == 1 else "fine_tuning"
+            agg_metrics["round"] = server_round
+
+            # Count client training modes
+            training_modes = {}
+            for _, fit_res in authorized_results:
+                mode = fit_res.metrics.get("training_mode", "unknown")
+                training_modes[mode] = training_modes.get(mode, 0) + 1
+            agg_metrics["client_training_modes"] = training_modes
 
             # Store metrics for history
             self.metrics_history.append({
                 "round": server_round,
                 "metrics": agg_metrics,
                 "num_clients": len(authorized_results),
-                "timestamp": datetime.now(timezone.utc).isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "training_mode": "full_training" if server_round == 1 else "fine_tuning",
+                "client_training_modes": training_modes
             })
 
             # Process client contributions with GA-Stacking reward system
-            if hasattr(self, "reward_system") and self.current_round_contributions:
-                logger.info(f"Processing {len(self.current_round_contributions)} client contributions with GA-Stacking rewards")
+            # if hasattr(self, "reward_system") and self.current_round_contributions:
+            #     logger.info(f"Processing {len(self.current_round_contributions)} client contributions with GA-Stacking rewards")
 
-                for wallet_address, ga_metrics in self.current_round_contributions.items():
-                    try:
-                        # Record contribution with detailed GA-Stacking metrics
-                        success, score, tx_hash = self.reward_system.record_client_contribution(
-                            client_address=wallet_address,
-                            ipfs_hash=ga_metrics["ipfs_hash"],
-                            metrics=ga_metrics,
-                            round_number=server_round
-                        )
+            #     # Adjust rewards based on round and training mode
+            #     for wallet_address, ga_metrics in self.current_round_contributions.items():
+            #         try:
+            #             # Check if client already processed for this round to prevent duplicate rewards
+            #             already_processed = False
+            #             try:
+            #                 if hasattr(self.reward_system, "check_client_processed_for_round"):
+            #                     already_processed = self.reward_system.check_client_processed_for_round(
+            #                         wallet_address, server_round
+            #                     )
+            #             except:
+            #                 # If method doesn't exist, continue with old behavior
+            #                 pass
+                            
+            #             if already_processed:
+            #                 logger.info(f"Client {wallet_address} already processed for round {server_round}")
+            #                 continue
                         
-                        if success:
-                            logger.info(f"Recorded GA-Stacking contribution for {wallet_address} with score {score}, tx: {tx_hash}")
-                        else:
-                            logger.warning(f"Failed to record GA-Stacking contribution for {wallet_address}")
-                    except Exception as e:
-                        logger.error(f"Error recording GA-Stacking contribution for {wallet_address}: {e}")
+            #             # Apply training mode multiplier
+            #             mode = ga_metrics.get("training_mode", "unknown")
+            #             # Bonus for full training in any round (more expensive computation)
+            #             mode_multiplier = 1.5 if mode == "full_training" else 1.0
+                        
+            #             # Update metrics with multiplier for reward calculation
+            #             reward_metrics = ga_metrics.copy()
+            #             reward_metrics["mode_multiplier"] = mode_multiplier
+                        
+            #             # Record contribution with detailed GA-Stacking metrics
+            #             success, score, tx_hash = self.reward_system.record_client_contribution(
+            #                 client_address=wallet_address,
+            #                 ipfs_hash=ga_metrics["ipfs_hash"],
+            #                 metrics=reward_metrics,
+            #                 round_number=server_round
+            #             )
+                        
+            #             if success:
+            #                 logger.info(f"Recorded GA-Stacking contribution for {wallet_address} with score {score} (mode: {mode}, multiplier: {mode_multiplier}), tx: {tx_hash}")
+            #             else:
+            #                 logger.warning(f"Failed to record GA-Stacking contribution for {wallet_address}")
+            #         except Exception as e:
+            #             logger.error(f"Error recording GA-Stacking contribution for {wallet_address}: {e}")
 
-                # Finalize the round and allocate rewards
-                try:
-                    success, allocated_amount = self.reward_system.finalize_round_and_allocate_rewards(server_round)
-                    if success:
-                        logger.info(f"Allocated {allocated_amount} ETH rewards for round {server_round}")
-                    else:
-                        logger.warning(f"Failed to allocate rewards for round {server_round}")
-                except Exception as e:
-                    logger.error(f"Error allocating rewards for round {server_round}: {e}")
-
-            # Update participating clients in blockchain if available
-            if self.blockchain:
-                try:
-                    # Get the global model hash from the first client's config
-                    # Assumes all clients received the same model
-                    ipfs_hash = authorized_results[0][1].metrics.get("ipfs_hash", None)
-
-                    if ipfs_hash:
-                        # Update model in blockchain with actual client count
-                        tx_hash = self.blockchain.register_or_update_model(
-                            ipfs_hash=ipfs_hash,
-                            round_num=server_round,
-                            version=self.get_version(server_round),
-                            participating_clients=len(authorized_results)
-                        )
-                        logger.info(f"Updated model in blockchain with {len(authorized_results)} clients, tx: {tx_hash}")
-                except Exception as e:
-                    logger.error(f"Failed to update model in blockchain: {e}")
+            #     # Finalize the round and allocate rewards
+            #     try:
+            #         success, allocated_amount = self.reward_system.finalize_round_and_allocate_rewards(server_round)
+            #         if success:
+            #             logger.info(f"Allocated {allocated_amount} ETH rewards for round {server_round}")
+            #         else:
+            #             logger.warning(f"Failed to allocate rewards for round {server_round}")
+            #     except Exception as e:
+            #         logger.error(f"Error allocating rewards for round {server_round}: {e}")
 
             # Add GA-Stacking reward metrics to the aggregation metrics
             if hasattr(self, "reward_system"):
@@ -459,6 +686,41 @@ class EnhancedFedAvgWithGA(fl.server.strategy.FedAvg):
                     logger.error(f"Error getting GA-Stacking contribution metrics: {e}")
 
         return parameters_aggregated, agg_metrics
+    
+    def fetch_client_models_from_ipfs(self, authorized_results):
+        """Fetch client models from IPFS using the hashes in their metrics."""
+        fetched_models = []
+        
+        for client, fit_res in authorized_results:
+            client_ipfs_hash = fit_res.metrics.get("client_ipfs_hash")
+            if not client_ipfs_hash:
+                logger.warning(f"Client {client.cid} did not provide IPFS hash")
+                continue
+            
+            try:
+                # Retrieve model data from IPFS with retry logic
+                model_data = None
+                for attempt in range(3):  # Try up to 3 times
+                    try:
+                        model_data = self.ipfs.get_json(client_ipfs_hash)
+                        if model_data and "ensemble_state" in model_data:
+                            # Successfully retrieved the model
+                            fetched_models.append((client, fit_res, model_data))
+                            logger.info(f"Successfully retrieved model for client {client.cid} from IPFS: {client_ipfs_hash}")
+                            break
+                        else:
+                            logger.warning(f"Retrieved invalid model data from IPFS (attempt {attempt+1}/3)")
+                            time.sleep(1)  # Wait before retry
+                    except Exception as retry_err:
+                        logger.warning(f"IPFS retrieval attempt {attempt+1}/3 failed for hash {client_ipfs_hash}: {retry_err}")
+                        time.sleep(2)  # Wait longer before retry
+                
+                if model_data is None:
+                    logger.error(f"Failed to retrieve valid model data for client {client.cid} after multiple attempts")
+            except Exception as e:
+                logger.error(f"Error retrieving model from IPFS for client {client.cid}: {e}")
+        
+        return fetched_models
     
     def configure_evaluate(
         self, server_round: int, parameters: Parameters, client_manager: fl.server.client_manager.ClientManager
@@ -616,7 +878,7 @@ class EnhancedFedAvgWithGA(fl.server.strategy.FedAvg):
             
             # Add GA-Stacking metrics if available
             for metric in ["ensemble_accuracy", "diversity_score", "generalization_score", 
-                        "convergence_rate", "avg_base_model_score", "final_score"]:
+                        "convergence_rate", "avg_base_model_score"]:
                 if metric in eval_res.metrics:
                     client_round_metrics[metric] = float(eval_res.metrics[metric])
             
@@ -711,9 +973,8 @@ class EnhancedFedAvgWithGA(fl.server.strategy.FedAvg):
             "diversity_score", 
             "generalization_score", 
             "convergence_rate", 
-            "avg_base_model_score",
-            "final_score"
-        ]
+            "avg_base_model_score"
+            ]
         
         # Initialize aggregated GA-Stacking metrics
         ga_metrics_avg = {key: 0.0 for key in ga_metrics_keys}
@@ -776,7 +1037,7 @@ class EnhancedFedAvgWithGA(fl.server.strategy.FedAvg):
                 logger.info(f"GA-Stacking metrics: "
                         f"Ensemble Acc={metrics.get('avg_ensemble_accuracy', 0):.4f}, "
                         f"Diversity={metrics.get('avg_diversity_score', 0):.4f}, "
-                        f"Avg Score={metrics.get('avg_final_score', 0):.1f}")
+                        )
                 
                 # If we have a reward system, log the reward distribution (keeping your existing code)
                 if hasattr(self, "reward_system"):
@@ -1047,37 +1308,21 @@ class EnhancedFedAvgWithGA(fl.server.strategy.FedAvg):
         return version_data["version"]
 
 def start_server(
-    server_address: str = "0.0.0.0:8088",
-    num_rounds: int = 10,
+    server_address: str = "0.0.0.0:8080",
+    num_rounds: int = 3,
     min_fit_clients: int = 2,
     min_evaluate_clients: int = 2,
     fraction_fit: float = 1.0,
-    fraction_evaluate: float = 1.0,
+    ipfs_url: str = "http://127.0.0.1:5001",
+    ganache_url: str = "http://127.0.0.1:7545",
+    contract_address: Optional[str] = None,
     private_key: Optional[str] = None,
     deploy_contract: bool = False,
-    version_prefix: str = "v1.0",
-    authorized_clients_only: Optional[List[str]] = None,
+    version_prefix: str = "1.0",
+    authorized_clients_only: bool = True,
     authorized_clients: Optional[List[str]] = None,
-    wallet_address: Optional[str] = None,
     round_rewards: int = 1000,
-    device : str = "cpu",
-    ipfs_connector: Optional[IPFSConnector] = None,
-    blockchain_connector: Optional[BlockchainConnector] = None,
-    ipfs_url: str = "http://127.0.0.1:5001/api/v0",
-    ganache_url: str = "http://192.168.1.146:7545",
-    contract_address: Optional[str] = None,
-    server_private_key: Optional[str] = None,
-    server_wallet_address: Optional[str] = None,
-    continue_from_round: int = 0,
-    continue_from_ipfs: Optional[str] = None,
-    output_dir: str = "./server_outputs",
-    bootstrap_clients: int = 2,
-    min_clients: int = 2,
-    ssl_key: Optional[str] = None,
-    ssl_cert: Optional[str] = None,
-    ca_cert: Optional[str] = None,
-    strategy: str = "fedavg_ga",
-    ga_stacking: bool = True
+    device: str = "cpu"
 ) -> None:
     """
     Start the federated learning server.
@@ -1100,127 +1345,118 @@ def start_server(
         strategy: Strategy to use ('fedavg_ga' or 'fedavg')
         ga_stacking: Whether to use GA-Stacking
     """
-    # Make sure the output directory exists
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # Set the current round
-    current_round = continue_from_round
-    
     # Initialize IPFS connector
     ipfs_connector = IPFSConnector(ipfs_api_url=ipfs_url)
+    logger.info(f"Initialized IPFS connector: {ipfs_url}")
     
-    # Initialize blockchain connector if a contract address is provided
+    # Initialize blockchain connector
     blockchain_connector = None
-    if contract_address:
+    if ganache_url:
         try:
             blockchain_connector = BlockchainConnector(
                 ganache_url=ganache_url,
                 contract_address=contract_address,
-                private_key=server_private_key
+                private_key=private_key
             )
             
-            # Verify server wallet authorization
-            if server_wallet_address:
-                is_authorized = blockchain_connector.is_server_authorized(server_wallet_address)
-                if is_authorized:
-                    logger.info(f"Server {server_wallet_address} is authorized on the blockchain")
+            # Deploy contract if needed
+            if contract_address is None and deploy_contract:
+                contract_address = blockchain_connector.deploy_contract()
+                logger.info(f"Deployed new contract at: {contract_address}")
+                
+                # Save contract address to file for future use
+                with open("contract_address.txt", "w") as f:
+                    f.write(contract_address)
+                
+                # Initialize the blockchain connector with the new contract
+                blockchain_connector = BlockchainConnector(
+                    ganache_url=ganache_url,
+                    contract_address=contract_address,
+                    private_key=private_key
+                )
+            elif contract_address is None:
+                logger.warning("No contract address provided and deploy_contract=False. Blockchain features disabled.")
+                blockchain_connector = None
+                
+            # Authorize clients if provided
+            if blockchain_connector and authorized_clients:
+                # Check which clients are not already authorized
+                to_authorize = []
+                for client in authorized_clients:
+                    if not blockchain_connector.is_client_authorized(client):
+                        to_authorize.append(client)
+                
+                if to_authorize:
+                    logger.info(f"Authorizing {len(to_authorize)} new clients")
+                    blockchain_connector.authorize_clients(to_authorize)
                 else:
-                    logger.warning(f"Server {server_wallet_address} is NOT authorized on the blockchain")
-                    if server_private_key:
-                        # Try to authorize the server
-                        tx_hash = blockchain_connector.authorize_server(server_wallet_address)
-                        logger.info(f"Authorized server with transaction: {tx_hash}")
-            
+                    logger.info("All provided clients are already authorized")
+                
         except Exception as e:
             logger.error(f"Failed to initialize blockchain connector: {e}")
-            logger.warning("Continuing without blockchain features")
+            logger.warning("Continuing without blockchain integration")
+            blockchain_connector = None
     
-    # Initialize the ensemble aggregator - NO DEVICE PARAMETER HERE
-    ensemble_aggregator = EnsembleAggregator()
+    # Configure strategy with GA-Stacking support
+    strategy = EnhancedFedAvgWithGA(
+        fraction_fit=fraction_fit,
+        min_fit_clients=min_fit_clients,
+        min_evaluate_clients=min_evaluate_clients,
+        min_available_clients=min_fit_clients,
+        ipfs_connector=ipfs_connector,
+        blockchain_connector=blockchain_connector,
+        version_prefix=version_prefix,
+        authorized_clients_only=authorized_clients_only,
+        round_rewards=round_rewards,
+        device=device
+    )
     
-    # Load initial parameters from IPFS if specified
-    initial_parameters = None
-    if continue_from_ipfs:
-        try:
-            # Get model data from IPFS
-            model_data = ipfs_connector.get_json(continue_from_ipfs)
-            
-            if model_data and "ensemble_state" in model_data:
-                # Extract the ensemble state
-                ensemble_state = model_data["ensemble_state"]
-                
-                # Serialize to parameters
-                ensemble_bytes = json.dumps(ensemble_state).encode('utf-8')
-                params = [np.frombuffer(ensemble_bytes, dtype=np.uint8)]
-                
-                # Convert to Flower parameters
-                initial_parameters = ndarrays_to_parameters(params)
-                
-                logger.info(f"Loaded initial parameters from IPFS: {continue_from_ipfs}")
-            else:
-                logger.error(f"Invalid model data from IPFS: {continue_from_ipfs}")
-        except Exception as e:
-            logger.error(f"Failed to load initial parameters from IPFS: {e}")
     
-    # Choose the strategy
-    if strategy == "fedavg_ga":
-        # Enhanced FedAvg with GA-Stacking
-        strategy = EnhancedFedAvgWithGA(
-            fraction_fit=1.0,
-            fraction_evaluate=1.0,
-            min_fit_clients=min_clients,
-            min_evaluate_clients=min_clients,
-            min_available_clients=min_clients,
-            initial_parameters=initial_parameters,
-            ipfs_connector=ipfs_connector,
-            blockchain_connector=blockchain_connector,
-            ensemble_aggregator=ensemble_aggregator,
-            federated_round=current_round,
-            on_fit_config_fn=fit_config_fn(current_round, ga_stacking=ga_stacking),
-            on_evaluate_config_fn=evaluate_config_fn(current_round)
-        )
-    else:
-        # Standard FedAvg
-        strategy = fl.server.strategy.FedAvg(
-            fraction_fit=1.0,
-            fraction_evaluate=1.0,
-            min_fit_clients=min_clients,
-            min_evaluate_clients=min_clients,
-            min_available_clients=min_clients,
-            initial_parameters=initial_parameters,
-            on_fit_config_fn=fit_config_fn(current_round, ga_stacking=False),
-            on_evaluate_config_fn=evaluate_config_fn(current_round)
-        )
-        
-    # Configure server
-    server_config = ServerConfig(num_rounds=3)
+    # Create metrics directory with timestamp to keep each training run separate
+    vn_timezone = pytz.timezone('Asia/Ho_Chi_Minh')
+    local_time = datetime.now(vn_timezone)
+    timestamp = local_time.strftime("%Y-%m-%d_%H-%M-%S")
+    metrics_dir = Path(f"metrics/run_{timestamp}")
+    metrics_dir.mkdir(parents=True, exist_ok=True)
     
-    # Configure SSL if certificates are provided
-    if ssl_key and ssl_cert:
-        # Use SSL for secure communication
-        ssl_config = SSLConfig(
-            key_path=ssl_key,
-            cert_path=ssl_cert,
-            ca_path=ca_cert if ca_cert else None,
-        )
-        logger.info("Using SSL for secure communication")
-    else:
-        # No SSL
-        ssl_config = None
-        logger.info("Not using SSL for communication")
+    # Start server
+    server = fl.server.Server(client_manager=fl.server.SimpleClientManager(), strategy=strategy)
     
-    # Write the PID to a file to make it easier to find and kill the server process
-    with open("server.pid", "w") as f:
-        f.write(str(os.getpid()))
-    
-    # Start the server
-    logger.info(f"Starting server at {server_address} (round {current_round})")
+    # monitor = start_monitoring_server(port=8050)
+
+    # Run server
     fl.server.start_server(
         server_address=server_address,
-        config=server_config,
-        strategy=strategy,
-        certificates=ssl_config
-    )  
+        server=server,
+        config=fl.server.ServerConfig(num_rounds=num_rounds)
+    )
+    
+    # Save metrics history (both combined and per-round)
+    strategy.save_metrics_history(filepath=str(metrics_dir / "metrics_history.json"))
+    
+    # Save client stats
+    strategy.save_client_stats(filepath=str(metrics_dir / "client_stats.json"))
+    
+    # Save model history
+    strategy.save_model_history(filepath=str(metrics_dir / "model_history.json"))
+    
+    # Create a summary file with key information
+    summary = {
+        "timestamp": timestamp,
+        "num_rounds": num_rounds,
+        "min_fit_clients": min_fit_clients,
+        "min_evaluate_clients": min_evaluate_clients,
+        "authorized_clients_only": authorized_clients_only,
+        "version_prefix": version_prefix,
+        "contract_address": contract_address,
+        "final_metrics": strategy.metrics_history[-1] if strategy.metrics_history else None
+    }
+    
+    with open(metrics_dir / "run_summary.json", "w") as f:
+        json.dump(summary, f, indent=2)
+    
+    logger.info(f"Server completed {num_rounds} rounds of federated learning with GA-Stacking")
+    logger.info(f"All metrics saved to {metrics_dir}")  
 
 if __name__ == "__main__":
     import argparse

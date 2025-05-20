@@ -1,0 +1,33 @@
+{
+  "details": {
+    "contribution_count": 3,
+    "total_score": 255,
+    "is_authorized": true,
+    "last_contribution_timestamp": 1747459197,
+    "rewards_earned": 0,
+    "rewards_claimed": false
+  },
+  "records": [
+    {
+      "round": 1,
+      "accuracy": 85.06,
+      "score": 85,
+      "timestamp": 1747459021,
+      "rewarded": false
+    },
+    {
+      "round": 2,
+      "accuracy": 85.06,
+      "score": 85,
+      "timestamp": 1747459107,
+      "rewarded": false
+    },
+    {
+      "round": 3,
+      "accuracy": 85.06,
+      "score": 85,
+      "timestamp": 1747459197,
+      "rewarded": false
+    }
+  ]
+}

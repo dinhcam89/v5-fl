@@ -1,0 +1,33 @@
+{
+  "round": 3,
+  "eval_loss": 0.1666666716337204,
+  "eval_metrics": {
+    "ensemble_accuracy": 0.9986301369863013,
+    "diversity_score": 0.0030006523157208084,
+    "true_positives": 3,
+    "recall": 1.0,
+    "true_negatives": 1455,
+    "generalization_score": 0.5,
+    "convergence_rate": 1.0,
+    "precision": 0.75,
+    "ensemble_size": 7.0,
+    "false_positives": 4,
+    "f1_score": 0.8333333333333333,
+    "loss": 0.16666666666666669,
+    "accuracy": 99.93160054719561,
+    "false_negatives": 0,
+    "num_clients": 2,
+    "total_clients": 2,
+    "authorized_clients": 2,
+    "unauthorized_clients": 0,
+    "avg_precision": 0.75,
+    "avg_recall": 1.0,
+    "avg_f1_score": 0.8333333333333333,
+    "global_precision": 0.42857142857142855,
+    "global_recall": 1.0,
+    "global_f1": 0.6,
+    "avg_accuracy": 99.93160054719561
+  },
+  "num_clients": 2,
+  "timestamp": "2025-05-19T13:13:59.085264+00:00"
+}

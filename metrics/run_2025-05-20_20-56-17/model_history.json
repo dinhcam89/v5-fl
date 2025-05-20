@@ -1,0 +1,26 @@
+[
+  {
+    "model_id": "0xe04e2a6d1738f3c166a3e3fcb37dd6c860380127a5060feac54f104a98a09e1f",
+    "ipfs_hash": "QmWeSQpP1D6jTbrHjgJeoXFQnh8RCuzthkkx9DvduSM77r",
+    "round": "1.0.0520-9377.1",
+    "version": 1747749844,
+    "timestamp": 2,
+    "participating_clients": "0xb6845ba34Fc592266921419ef65b9b4D943e2797"
+  },
+  {
+    "model_id": "0xe4701d62944886e691e627b3ac3825d167b613049c79626e9e45c8ddc1cc41be",
+    "ipfs_hash": "QmW3vHD7bJ3tUhwi1MvQZcJvwtvMfNdUokpTc3Ji2BEvcG",
+    "round": "1.0.0520-9377.2",
+    "version": 1747749848,
+    "timestamp": 2,
+    "participating_clients": "0xb6845ba34Fc592266921419ef65b9b4D943e2797"
+  },
+  {
+    "model_id": "0x7d6c00e44c86f6a30798522f1f81e4be17ca16a0debefbf1048e78abcf41ea16",
+    "ipfs_hash": "QmZoR9Yq8nMPVfUe8sW4papVroJ1vXpvb4M35reVqM5TcN",
+    "round": "1.0.0520-9377.3",
+    "version": 1747749852,
+    "timestamp": 2,
+    "participating_clients": "0xb6845ba34Fc592266921419ef65b9b4D943e2797"
+  }
+]

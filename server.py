@@ -37,7 +37,6 @@ from ipfs_connector import IPFSConnector
 from blockchain_connector import BlockchainConnector
 from ensemble_aggregation import EnsembleAggregator
 from ga_stacking_reward_system import GAStackingRewardSystem
-from server_config import fit_config_fn, evaluate_config_fn
 
 # Configure logging
 logging.basicConfig(
@@ -197,10 +196,12 @@ class EnhancedFedAvgWithGA(fl.server.strategy.FedAvg):
         return ndarrays_to_parameters([np.array([])])
     
     def configure_fit(self, server_round, parameters, client_manager):
-        # Remove complex model parameter passing
-        # Just send round info and basic config
+        """Configure the training round."""
+        
+        # Basic configuration
         config = {
             "server_round": server_round,
+            "is_first_round": server_round == 1,
             "ga_stacking": True,
             "local_epochs": 5,
             "validation_split": 0.2,
@@ -210,7 +211,30 @@ class EnhancedFedAvgWithGA(fl.server.strategy.FedAvg):
             "detection_threshold": 0.3
         }
         
-        # Use empty parameters to reduce payload size - clients initialize their own models
+        # Initialize global model hash attribute if not exists
+        if not hasattr(self, 'current_global_model_hash'):
+            self.current_global_model_hash = None
+            logger.info("Initialized current_global_model_hash to None")
+        
+        # For rounds after the first, include the IPFS hash with global weights
+        if server_round > 1:
+            if self.current_global_model_hash:
+                config["global_model_ipfs_hash"] = self.current_global_model_hash
+                logger.info(f"Sending global model IPFS hash for round {server_round}: {self.current_global_model_hash}")
+            else:
+                logger.error(f"No global model IPFS hash available for round {server_round}!")
+                # Try to recover from history if possible
+                if hasattr(self, 'metrics_history') and self.metrics_history:
+                    for metrics in reversed(self.metrics_history):
+                        if metrics.get("round") == server_round - 1 and "metrics" in metrics:
+                            if "global_model_ipfs_hash" in metrics["metrics"]:
+                                recovered_hash = metrics["metrics"]["global_model_ipfs_hash"]
+                                logger.info(f"Recovered hash from history: {recovered_hash}")
+                                config["global_model_ipfs_hash"] = recovered_hash
+                                self.current_global_model_hash = recovered_hash
+                                break
+        
+        # Use empty parameters to reduce payload size
         empty_parameters = ndarrays_to_parameters([np.array([])])
         fit_ins = FitIns(empty_parameters, config)
         
@@ -220,34 +244,71 @@ class EnhancedFedAvgWithGA(fl.server.strategy.FedAvg):
             min_num_clients=self.min_available_clients
         )
         
+        # Log configuration being sent
+        logger.info(f"Sending configuration to {len(clients)} clients: {config}")
+        
         return [(client, fit_ins) for client in clients]
+    
+    def _store_ensemble_weights_with_contributions(
+        self, 
+        ensemble_weights: Any, 
+        base_model_names: list, 
+        client_contributions: list,
+        server_round: int
+    ) -> str:
+        """Store aggregated ensemble weights with client contributions in IPFS."""
         
-    def _store_raw_parameters_in_ipfs(self, params_ndarrays: List[np.ndarray], server_round: int) -> str:
-        """Store raw parameters in IPFS."""
-        # Create state dict from weights
-        state_dict = {}
-        layer_names = ["linear.weight", "linear.bias"]  # Adjust based on your model
+        # Ensure ensemble weights are in the right format
+        if isinstance(ensemble_weights, np.ndarray):
+            ensemble_weights = ensemble_weights.tolist()
         
-        for i, name in enumerate(layer_names):
-            if i < len(params_ndarrays):
-                state_dict[name] = params_ndarrays[i].tolist()
+        # Handle empty contributions case
+        if not client_contributions:
+            logger.warning("No client contributions provided, creating empty list")
+            client_contributions = []
         
-        # Create metadata
+        # Calculate aggregate statistics
+        total_data_points = sum(contrib.get("data_size", 0) for contrib in client_contributions)
+        average_score = sum(contrib.get("score", 0) for contrib in client_contributions) / len(client_contributions) if client_contributions else 0
+        
+        # Create structure that matches client expectations
         model_metadata = {
-            "state_dict": state_dict,
+            "ensemble_weights": ensemble_weights,  # At root level for client compatibility
+            "base_model_names": base_model_names,  # At root level for client compatibility
+            "client_contributions": client_contributions,
             "info": {
                 "round": server_round,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "version": self.get_version(server_round),
-                "is_ensemble": False
+                "base_model_names": base_model_names,  # Also in info for compatibility
+                "participating_clients": len(client_contributions),
+                "total_data_points": total_data_points,
+                "average_score": average_score
             }
         }
         
-        # Store in IPFS
-        ipfs_hash = self.ipfs.add_json(model_metadata)
-        logger.info(f"Stored global model in IPFS: {ipfs_hash}")
-        
-        return ipfs_hash
+        # Store in IPFS with better error handling
+        try:
+            ipfs_hash = self.ipfs.add_json(model_metadata)
+            logger.info(f"Stored ensemble weights in IPFS: {ipfs_hash}")
+            
+            # Verify data was stored correctly
+            try:
+                verification = self.ipfs.get_json(ipfs_hash)
+                logger.info(f"Verification - stored data contains keys: {list(verification.keys())}")
+                if "ensemble_weights" in verification:
+                    logger.info(f"Ensemble weights successfully stored, length: {len(verification['ensemble_weights'])}")
+                else:
+                    logger.warning("Ensemble weights missing from stored data!")
+            except Exception as ve:
+                logger.error(f"Could not verify IPFS storage: {str(ve)}")
+            
+            return ipfs_hash
+        except Exception as e:
+            logger.error(f"Failed to store ensemble weights in IPFS: {str(e)}")
+            # Generate a deterministic hash for error cases to avoid None
+            fallback_hash = f"error-{server_round}-{int(time.time())}"
+            return fallback_hash
     
     def aggregate_fit(
         self,
@@ -324,34 +385,78 @@ class EnhancedFedAvgWithGA(fl.server.strategy.FedAvg):
             weights = [fit_res.num_examples / num_examples_total for _, fit_res in authorized_results]
         else:
             weights = [1.0 / len(authorized_results) for _ in authorized_results]
-
-        # Check if we need to aggregate ensembles or regular models
-        any_ensemble = False
-        for _, fit_res in authorized_results:
-            params = parameters_to_ndarrays(fit_res.parameters)
-            if len(params) == 1 and params[0].dtype == np.uint8:
-                any_ensemble = True
-                break
-
-        # Aggregate the updates
-        if any_ensemble:
-            # Use ensemble aggregation
-            logger.info("Aggregating ensemble models")
-            parameters_aggregated, agg_metrics = self.ensemble_aggregator.aggregate_fit_results(
-                authorized_results, weights
-            )
-        else:
-            # Fall back to standard FedAvg
-            logger.info("Aggregating standard models")
-            parameters_aggregated, metrics = super().aggregate_fit(server_round, authorized_results, failures)
-            agg_metrics = metrics
-
-        if parameters_aggregated is not None:
-            # Add metrics about client participation
-            agg_metrics["total_clients"] = len(results)
-            agg_metrics["authorized_clients"] = len(authorized_results)
-            agg_metrics["unauthorized_clients"] = len(unauthorized_clients)
-
+        
+        # Fetch ensemble weights from IPFS and aggregate them
+        ensemble_weights_list = []
+        base_model_names = None
+        client_contributions = []
+        
+        for i, (client, fit_res) in enumerate(authorized_results):
+            wallet_address = fit_res.metrics.get("wallet_address", "unknown")
+            if wallet_address == "unknown":
+                continue
+                
+            # Get the client's IPFS hash
+            client_ipfs_hash = fit_res.metrics.get("client_ipfs_hash", "")
+            if not client_ipfs_hash:
+                logger.warning(f"Client {wallet_address} did not provide an IPFS hash")
+                continue
+                
+            # Fetch the client's data from IPFS
+            try:
+                client_data = self.ipfs.get_json(client_ipfs_hash)
+                
+                # Extract ensemble weights from client data
+                if "ensemble_weights" in client_data:
+                    client_ensemble_weights = client_data["ensemble_weights"]
+                    ensemble_weights_list.append(client_ensemble_weights)
+                    
+                    # Get base model names if not already set
+                    if base_model_names is None and "base_model_names" in client_data.get("info", {}):
+                        base_model_names = client_data["info"]["base_model_names"]
+                    
+                    # Create contribution record with existing GA metrics
+                    contribution = {
+                        "wallet_address": wallet_address,
+                        "score": fit_res.metrics.get("final_score", 0.0),
+                        "data_size": fit_res.num_examples,
+                        "ipfs_hash": client_ipfs_hash
+                    }
+                    client_contributions.append(contribution)
+                else:
+                    logger.warning(f"Client {wallet_address} data does not contain ensemble weights")
+            except Exception as e:
+                logger.error(f"Failed to fetch client data from IPFS for {wallet_address}: {e}")
+        
+        # If we have ensemble weights to aggregate
+        if ensemble_weights_list and base_model_names:
+            logger.info(f"Aggregating ensemble weights from {len(ensemble_weights_list)} clients")
+            
+            # Perform weighted average of ensemble weights
+            aggregated_ensemble_weights = [0.0] * len(ensemble_weights_list[0])
+            for i, client_weights in enumerate(ensemble_weights_list):
+                client_weight = weights[i] if i < len(weights) else 0
+                for j, w in enumerate(client_weights):
+                    aggregated_ensemble_weights[j] += w * client_weight
+            
+            # Store aggregated ensemble weights with client contributions in IPFS
+            global_model_ipfs_hash = self._store_ensemble_weights_with_contributions(
+                aggregated_ensemble_weights, base_model_names, 
+                client_contributions, server_round)
+            
+            # Save the hash for the next round
+            self.current_global_model_hash = global_model_ipfs_hash
+            
+            # Initialize aggregated metrics
+            agg_metrics = {
+                "global_model_ipfs_hash": global_model_ipfs_hash,
+                "ensemble_weights": aggregated_ensemble_weights,
+                "participating_clients": len(client_contributions),
+                "total_clients": len(results),
+                "authorized_clients": len(authorized_results),
+                "unauthorized_clients": len(unauthorized_clients)
+            }
+            
             # Store metrics for history
             self.metrics_history.append({
                 "round": server_round,
@@ -361,15 +466,25 @@ class EnhancedFedAvgWithGA(fl.server.strategy.FedAvg):
             })
 
             # Process client contributions with GA-Stacking reward system
-            if hasattr(self, "reward_system") and self.current_round_contributions:
-                logger.info(f"Processing {len(self.current_round_contributions)} client contributions with GA-Stacking rewards")
+            if hasattr(self, "reward_system") and client_contributions:
+                logger.info(f"Processing {len(client_contributions)} client contributions with GA-Stacking rewards")
 
-                for wallet_address, ga_metrics in self.current_round_contributions.items():
+                for contrib in client_contributions:
+                    wallet_address = contrib["wallet_address"]
                     try:
+                        # Get stored GA metrics for this client
+                        ga_metrics = self.current_round_contributions.get(wallet_address, {})
+                        if not ga_metrics:
+                            # If no metrics stored, create minimal metrics
+                            ga_metrics = {
+                                "ipfs_hash": contrib["ipfs_hash"],
+                                "final_score": contrib.get("score", 0.0)
+                            }
+                            
                         # Record contribution with detailed GA-Stacking metrics
                         success, score, tx_hash = self.reward_system.record_client_contribution(
                             client_address=wallet_address,
-                            ipfs_hash=ga_metrics["ipfs_hash"],
+                            ipfs_hash=contrib["ipfs_hash"],
                             metrics=ga_metrics,
                             round_number=server_round
                         )
@@ -394,19 +509,14 @@ class EnhancedFedAvgWithGA(fl.server.strategy.FedAvg):
             # Update participating clients in blockchain if available
             if self.blockchain:
                 try:
-                    # Get the global model hash from the first client's config
-                    # Assumes all clients received the same model
-                    ipfs_hash = authorized_results[0][1].metrics.get("ipfs_hash", None)
-
-                    if ipfs_hash:
-                        # Update model in blockchain with actual client count
-                        tx_hash = self.blockchain.register_or_update_model(
-                            ipfs_hash=ipfs_hash,
-                            round_num=server_round,
-                            version=self.get_version(server_round),
-                            participating_clients=len(authorized_results)
-                        )
-                        logger.info(f"Updated model in blockchain with {len(authorized_results)} clients, tx: {tx_hash}")
+                    # Register global model in blockchain
+                    tx_hash = self.blockchain.register_or_update_model(
+                        ipfs_hash=global_model_ipfs_hash,
+                        round_num=server_round,
+                        version=self.get_version(server_round),
+                        participating_clients=len(client_contributions)
+                    )
+                    logger.info(f"Registered global model in blockchain, tx: {tx_hash}")
                 except Exception as e:
                     logger.error(f"Failed to update model in blockchain: {e}")
 
@@ -422,8 +532,16 @@ class EnhancedFedAvgWithGA(fl.server.strategy.FedAvg):
                         agg_metrics["ga_stacking_reward_participants"] = summary.get("count", 0)
                 except Exception as e:
                     logger.error(f"Error getting GA-Stacking contribution metrics: {e}")
-
-        return parameters_aggregated, agg_metrics
+            
+            # Create empty parameters (since we're only using IPFS hash)
+            parameters_aggregated = ndarrays_to_parameters([np.array([])])
+            
+            return parameters_aggregated, agg_metrics
+        else:
+            logger.warning("No valid ensemble weights found to aggregate")
+            # Fall back to standard aggregation if no ensemble weights
+            parameters_aggregated, metrics = super().aggregate_fit(server_round, authorized_results, failures)
+            return parameters_aggregated, metrics
     
     def configure_evaluate(
         self, server_round: int, parameters: Parameters, client_manager: fl.server.client_manager.ClientManager

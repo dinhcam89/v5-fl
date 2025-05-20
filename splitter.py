@@ -4,7 +4,7 @@ import os
 from sklearn.model_selection import train_test_split
 
 # ==== Cấu hình trực tiếp trong file ====
-NUM_CLIENTS = 5
+NUM_CLIENTS = 26
 SEED = 42
 DATA_PATH = "data"  # Thư mục chứa creditcard.csv
 VERBOSE = True

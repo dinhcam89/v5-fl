@@ -18,9 +18,9 @@ BASE_MODELS = {
     'svc':      SVC(probability=True),
     'rf':       RandomForestClassifier(n_estimators=100),
     'knn':      KNeighborsClassifier(n_neighbors=5),
-    'catboost': CatBoostClassifier(verbose=0),
-    'lgbm':     LGBMClassifier(),
-    'xgb':      XGBClassifier(eval_metric='logloss')
+    'catboost': CatBoostClassifier(verbose=0)
+    # 'lgbm':     LGBMClassifier(),
+    # 'xgb':      XGBClassifier(eval_metric='logloss')
 }
 
 # Dictionary for meta-model

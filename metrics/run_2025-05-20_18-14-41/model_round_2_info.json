@@ -1,0 +1,24 @@
+{
+  "model_id": "0xf7b1de5422155cc97260518c09ed4d7bdd9d81eb63aa793ed72ee1c0ce308427",
+  "ipfs_hash": "QmQSMZhvHptLWW1cCUb72TkCjRzCQthwhdJevz4fq4Ape8",
+  "round": "1.0.0518-5084.2",
+  "version": 1747555331,
+  "timestamp": 2,
+  "participating_clients": "0xb6845ba34Fc592266921419ef65b9b4D943e2797",
+  "model_info": {
+    "round": 2,
+    "timestamp": "2025-05-18T08:02:09.959974+00:00",
+    "version": "1.0.0518-5084.2",
+    "is_ensemble": true,
+    "num_models": 7,
+    "model_names": [
+      "catboost",
+      "knn",
+      "lgbm",
+      "lr",
+      "rf",
+      "svc",
+      "xgb"
+    ]
+  }
+}

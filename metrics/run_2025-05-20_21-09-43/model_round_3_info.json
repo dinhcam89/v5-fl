@@ -1,0 +1,23 @@
+{
+  "model_id": "0x0390b818d18995c4ec06e1e07445a4a403f862280fc8db8bb2a6c09c44b35eaa",
+  "ipfs_hash": "QmVLEBUUrv4m7hs4HkxjM5NXWGF1DPiZ1car7N7NiGWxwQ",
+  "round": "1.0.0520-0183.3",
+  "version": 1747750294,
+  "timestamp": 2,
+  "participating_clients": "0xb6845ba34Fc592266921419ef65b9b4D943e2797",
+  "model_info": {
+    "round": 3,
+    "timestamp": "2025-05-20T14:11:32.193202+00:00",
+    "version": "1.0.0520-0183.3",
+    "base_model_names": [
+      "lr",
+      "svc",
+      "rf",
+      "knn",
+      "catboost"
+    ],
+    "participating_clients": 2,
+    "total_data_points": 34994,
+    "average_score": 0.0
+  }
+}

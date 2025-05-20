@@ -16,7 +16,7 @@ from datetime import datetime
 from blockchain_connector import BlockchainConnector
 
 def load_blockchain_connector(
-    ganache_url: str = "http://192.168.1.146:7545",
+    ganache_url: str = "http://192.168.80.1:7545",
     contract_address: Optional[str] = None,
     private_key: Optional[str] = None,
 ) -> BlockchainConnector:
@@ -601,7 +601,7 @@ def main():
     parser = argparse.ArgumentParser(description="Client management tool for federated learning with ETH rewards")
     
     # Blockchain connection
-    parser.add_argument("--ganache-url", type=str, default="http://192.168.1.146:7545", help="Ganache blockchain URL")
+    parser.add_argument("--ganache-url", type=str, default="http://192.168.80.1:7545", help="Ganache blockchain URL")
     parser.add_argument("--contract-address", type=str, help="Federation contract address")
     parser.add_argument("--private-key", type=str, help="Private key for blockchain transactions")
     

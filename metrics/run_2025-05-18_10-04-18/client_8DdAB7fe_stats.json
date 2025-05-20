@@ -1,0 +1,54 @@
+{
+  "details": {
+    "contribution_count": 6,
+    "total_score": 255,
+    "is_authorized": true,
+    "last_contribution_timestamp": 1747537768,
+    "rewards_earned": 0,
+    "rewards_claimed": false
+  },
+  "records": [
+    {
+      "round": 1,
+      "accuracy": 0.85,
+      "score": 0,
+      "timestamp": 1747537002,
+      "rewarded": false
+    },
+    {
+      "round": 2,
+      "accuracy": 0.0,
+      "score": 0,
+      "timestamp": 1747537046,
+      "rewarded": false
+    },
+    {
+      "round": 1,
+      "accuracy": 0.85,
+      "score": 0,
+      "timestamp": 1747537411,
+      "rewarded": false
+    },
+    {
+      "round": 1,
+      "accuracy": 85.15,
+      "score": 85,
+      "timestamp": 1747537561,
+      "rewarded": false
+    },
+    {
+      "round": 2,
+      "accuracy": 85.15,
+      "score": 85,
+      "timestamp": 1747537669,
+      "rewarded": false
+    },
+    {
+      "round": 3,
+      "accuracy": 85.15,
+      "score": 85,
+      "timestamp": 1747537768,
+      "rewarded": false
+    }
+  ]
+}

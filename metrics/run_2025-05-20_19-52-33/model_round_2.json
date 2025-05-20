@@ -1,0 +1,51 @@
+{
+  "ensemble_weights": [
+    0.03376819308280293,
+    0.0545945557556787,
+    0.17192178113415402,
+    0.21917113422439063,
+    0.22127145242118407,
+    0.08152001589648565,
+    0.21775286748530398
+  ],
+  "base_model_names": [
+    "lr",
+    "svc",
+    "rf",
+    "knn",
+    "catboost",
+    "lgbm",
+    "xgb"
+  ],
+  "client_contributions": [
+    {
+      "wallet_address": "0x432eeDFD74F3CD992689f1cC2c0cB2758DdAB7fe",
+      "score": 0.0,
+      "data_size": 90982,
+      "ipfs_hash": "QmVcc9sj5x2qeLnnK3BFRAYrcnV6Dzfp3xtogEnjbpP4Tj"
+    },
+    {
+      "wallet_address": "0x9c4Ec6537bF4d916B71008003Fb1311B7C157C4f",
+      "score": 0.0,
+      "data_size": 90990,
+      "ipfs_hash": "QmSMoFTNPctegB5wHQh1J7cswse4hTG55G1SkdHLb1cHHZ"
+    }
+  ],
+  "info": {
+    "round": 2,
+    "timestamp": "2025-05-20T13:26:32.066569+00:00",
+    "version": "1.0.0520-5553.2",
+    "base_model_names": [
+      "lr",
+      "svc",
+      "rf",
+      "knn",
+      "catboost",
+      "lgbm",
+      "xgb"
+    ],
+    "participating_clients": 2,
+    "total_data_points": 181972,
+    "average_score": 0.0
+  }
+}

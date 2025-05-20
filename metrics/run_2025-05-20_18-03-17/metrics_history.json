@@ -1,0 +1,110 @@
+[
+  {
+    "round": 1,
+    "metrics": {
+      "total_clients": 2,
+      "authorized_clients": 2,
+      "unauthorized_clients": 0,
+      "ga_stacking_avg_score": 43.473684210526315,
+      "ga_stacking_score_range": 94,
+      "ga_stacking_reward_participants": 57
+    },
+    "num_clients": 2,
+    "timestamp": "2025-05-20T11:04:15.538710+00:00"
+  },
+  {
+    "round": 1,
+    "eval_loss": Infinity,
+    "eval_metrics": {
+      "total_clients": 2,
+      "authorized_clients": 2,
+      "unauthorized_clients": 0,
+      "avg_precision": 0.0,
+      "avg_recall": 0.0,
+      "avg_f1_score": 0.0,
+      "avg_auc_roc": 0.5,
+      "true_positives": 0,
+      "false_positives": 0,
+      "true_negatives": 0,
+      "false_negatives": 0,
+      "global_precision": 0.0,
+      "global_recall": 0.0,
+      "global_f1": 0.0,
+      "avg_accuracy": 0.0
+    },
+    "num_clients": 2,
+    "timestamp": "2025-05-20T11:04:17.072789+00:00"
+  },
+  {
+    "round": 2,
+    "metrics": {
+      "total_clients": 2,
+      "authorized_clients": 2,
+      "unauthorized_clients": 0,
+      "ga_stacking_avg_score": 44.73913043478261,
+      "ga_stacking_score_range": 96,
+      "ga_stacking_reward_participants": 46
+    },
+    "num_clients": 2,
+    "timestamp": "2025-05-20T11:04:17.218729+00:00"
+  },
+  {
+    "round": 2,
+    "eval_loss": Infinity,
+    "eval_metrics": {
+      "total_clients": 2,
+      "authorized_clients": 2,
+      "unauthorized_clients": 0,
+      "avg_precision": 0.0,
+      "avg_recall": 0.0,
+      "avg_f1_score": 0.0,
+      "avg_auc_roc": 0.5,
+      "true_positives": 0,
+      "false_positives": 0,
+      "true_negatives": 0,
+      "false_negatives": 0,
+      "global_precision": 0.0,
+      "global_recall": 0.0,
+      "global_f1": 0.0,
+      "avg_accuracy": 0.0
+    },
+    "num_clients": 2,
+    "timestamp": "2025-05-20T11:04:18.528177+00:00"
+  },
+  {
+    "round": 3,
+    "metrics": {
+      "total_clients": 2,
+      "authorized_clients": 2,
+      "unauthorized_clients": 0,
+      "ga_stacking_avg_score": 54.31428571428572,
+      "ga_stacking_score_range": 98,
+      "ga_stacking_reward_participants": 35
+    },
+    "num_clients": 2,
+    "timestamp": "2025-05-20T11:04:18.681348+00:00"
+  },
+  {
+    "round": 3,
+    "eval_loss": Infinity,
+    "eval_metrics": {
+      "total_clients": 2,
+      "authorized_clients": 2,
+      "unauthorized_clients": 0,
+      "avg_precision": 0.0,
+      "avg_recall": 0.0,
+      "avg_f1_score": 0.0,
+      "avg_auc_roc": 0.5,
+      "true_positives": 0,
+      "false_positives": 0,
+      "true_negatives": 0,
+      "false_negatives": 0,
+      "global_precision": 0.0,
+      "global_recall": 0.0,
+      "global_f1": 0.0,
+      "avg_accuracy": 0.0
+    },
+    "num_clients": 2,
+    "timestamp": "2025-05-20T11:04:19.787552+00:00"
+  }
+]
