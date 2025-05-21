@@ -180,64 +180,10 @@ class GAStackingClient(fl.client.NumPyClient):
         
         logger.warning("Failed to set parameters - invalid format")
     
-    def set_parameters_from_ipfs(self, ipfs_hash: str) -> None:
-        """Set model parameters from IPFS."""
-        try:
-            # Get model data from IPFS
-            model_data = self.ipfs.get_json(ipfs_hash)
-            
-            if model_data and "ensemble_state" in model_data:
-                # Load ensemble state
-                ensemble_state = model_data["ensemble_state"]
-                self.ensemble_state = ensemble_state
-                logger.info(f"Ensemble model loaded from IPFS: {ipfs_hash}")
-            else:
-                logger.error(f"Invalid model data from IPFS: {ipfs_hash}")
-                
-        except Exception as e:
-            logger.error(f"Failed to load model from IPFS: {e}")
-            logger.error(f"Error details: {str(e)}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
-    
-    def save_ensemble_to_ipfs(self, round_num, metrics=None):
-        """Save ensemble model to IPFS."""
-        if not hasattr(self, 'ensemble_state') or self.ensemble_state is None:
-            logger.warning("No ensemble state to save")
-            return None
         
-        try:
-            # Safely create metadata with null checks
-            model_metadata = {
-                "ensemble_state": self.ensemble_state,
-                "info": {
-                    "round": round_num,
-                    "client_id": self.client_id,
-                    "wallet_address": self.wallet_address if self.wallet_address else "unknown",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "ensemble_size": len(self.ensemble_state.get("model_names", [])),
-                    "weights": self.ensemble_state.get("weights", [])
-                }
-            }
-            
-            # Add metrics if provided
-            if metrics:
-                model_metadata["info"]["metrics"] = metrics
-            
-            # Store in IPFS
-            ipfs_hash = self.ipfs.add_json(model_metadata)
-            logger.info(f"Stored ensemble model in IPFS: {ipfs_hash}")
-            
-            return ipfs_hash
-        except Exception as e:
-            logger.error(f"Failed to save ensemble to IPFS: {str(e)}")
-            return None
-    
     def fit(self, parameters: Parameters, config: Dict[str, Scalar]) -> Tuple[List[np.ndarray], int, Dict[str, Scalar]]:
         """
-        Modified fit method to implement the desired workflow:
-        - Round 1: Train base models + GA-Stacking with initial weights
-        - Round 2+: Fine-tune with aggregated weights
+        Train the model using GA-Stacking in Round 1 and fine-tune in subsequent rounds.
         """
         # Check if client is authorized (if blockchain is available)
         if self.blockchain and self.wallet_address:
@@ -256,37 +202,11 @@ class GAStackingClient(fl.client.NumPyClient):
         is_first_round = server_round == 1
         global_model_ipfs_hash = config.get("global_model_ipfs_hash", None)
         
-        # Create client-specific model directory
-        model_dir = f"models/{self.client_id}"
-        os.makedirs(model_dir, exist_ok=True)
-        
-        # Use data splits (already prepared in your client)
+        # Prepare data
         X_train, y_train = self.X_train, self.y_train
         X_val, y_val = self.X_val, self.y_val
-        
-        # Initialize ensemble weights to None (will be set based on round)
         initial_weights = None
-        
-        # Get ensemble weights from config or IPFS for both rounds
-        if is_first_round:
-            # For Round 1: Check if server provided initial weights in config
-            if "initial_ensemble_weights" in config:
-                initial_weights = config.get("initial_ensemble_weights")
-                logger.info(f"Using server-provided initial weights: {initial_weights}")
-        else:
-            # For Rounds 2+: Get aggregated weights from IPFS
-            if global_model_ipfs_hash:
-                try:
-                    # Retrieve aggregated ensemble weights from IPFS
-                    global_model_data = self.ipfs.get_json(global_model_ipfs_hash)
-                    
-                    # Extract ensemble weights
-                    initial_weights = global_model_data.get("ensemble_weights")
-                    logger.info(f"Retrieved aggregated weights from IPFS: {initial_weights}")
-                except Exception as e:
-                    logger.error(f"Failed to retrieve ensemble weights from IPFS: {e}")
-        
-        # ROUND 1: Train base models + GA-Stacking (with optional initial weights)
+        # ROUND 1: Train base models + GA-Stacking from scratch
         if is_first_round:
             logger.info("Round 1: Training base models with GA-Stacking")
             try:
@@ -298,48 +218,28 @@ class GAStackingClient(fl.client.NumPyClient):
                     verbose=True
                 )
                 
-                # Train the GA-Stacking pipeline, passing initial weights if available
-                meta_X_train = generate_meta_features(
-                    X_train, y_train, self.ga_pipeline.base_models, n_splits=self.ga_pipeline.cv_folds, n_jobs=-1
+                # Generate random initial weights if none provided
+                if initial_weights is None:
+                    # Get the number of base models
+                    num_models = len(self.ga_pipeline.base_models)
+                    logger.info(f"Generating random initial weights for {num_models} base models")
+                    
+                    # Generate random weights that sum to 1
+                    random_weights = np.random.rand(num_models)
+                    initial_weights = random_weights / random_weights.sum()
+                    
+                    logger.info(f"Generated random initial weights: {initial_weights}")
+                
+                # Train the GA-Stacking pipeline with initial weights
+                self.ga_results = self.ga_pipeline.train(
+                    X_train, y_train, X_val, y_val, 
+                    init_weights=initial_weights
                 )
-                
-                # Train base models
-                with parallel_backend("loky"):
-                    self.ga_pipeline.trained_base_models = train_base_models(
-                        X_train, y_train, self.ga_pipeline.base_models, n_jobs=-1
-                    )
-                
-                # Generate validation meta-features
-                meta_X_val = np.column_stack([
-                    model.predict_proba(X_val)[:, 1]
-                    for model in self.ga_pipeline.trained_base_models.values()
-                ])
-                
-                # Run GA with initial weights if provided
-                self.ga_pipeline.best_weights, self.ga_pipeline.convergence_history = GA_weighted(
-                    meta_X_train, y_train, meta_X_val, y_val,
-                    pop_size=self.ga_pipeline.pop_size,
-                    generations=self.ga_pipeline.generations,
-                    crossover_prob=self.ga_pipeline.crossover_prob,
-                    mutation_prob=self.ga_pipeline.mutation_prob,
-                    metric=self.ga_pipeline.metric,
-                    verbose=self.ga_pipeline.verbose,
-                    init_weights=initial_weights  # Pass the initial weights here
-                )
-                
-                # Get results (reusing your existing code)
-                self.ga_results = {
-                    "val_metrics": evaluate_metrics(y_val, ensemble_predict(meta_X_val, self.ga_pipeline.best_weights)),
-                    "best_weights": self.ga_pipeline.best_weights.tolist(),
-                    "model_names": self.ga_pipeline.model_names,
-                    "diversity_score": self.ga_pipeline._calculate_diversity(X_val, y_val),
-                    "generalization_score": self.ga_pipeline._calculate_generalization(X_train, y_train, X_val, y_val),
-                    "convergence_history": self.ga_pipeline.convergence_history
-                }
                 
                 # Save ensemble state
                 self.ensemble_state = self.ga_pipeline.get_ensemble_state()
                 
+                model_dir = os.path.join("models", f"client_{self.client_id}")
                 # Save base models for future rounds
                 self.ga_pipeline.save_base_models(model_dir)
                 
@@ -353,65 +253,112 @@ class GAStackingClient(fl.client.NumPyClient):
         else:
             logger.info(f"Round {server_round}: Fine-tuning with aggregated weights")
             try:
-                # Initialize the GA pipeline if not already done
-                if not hasattr(self, 'ga_pipeline') or self.ga_pipeline is None:
-                    self.ga_pipeline = GAStackingPipeline(verbose=True)
-                
-                # Load saved base models
-                loaded_models = self.ga_pipeline.load_base_models(model_dir)
-                
-                # Perform fine-tuning with the aggregated weights
-                self.ga_results = self.ga_pipeline.fine_tune(
-                    X_train, y_train, X_val, y_val,
-                    base_models=loaded_models,
-                    weights=initial_weights  # Use the weights from IPFS
-                )
-                
-                # Get updated ensemble state
-                self.ensemble_state = self.ga_pipeline.get_ensemble_state()
-                
-                logger.info(f"Completed fine-tuning with weights")
+                if global_model_ipfs_hash:
+                    # Log the hash we're trying to retrieve
+                    logger.info(f"Retrieving aggregated weights from IPFS hash: {global_model_ipfs_hash}")
+                    
+                    # Retrieve aggregated ensemble weights from IPFS
+                    try:
+                        global_model_data = self.ipfs.get_json(global_model_ipfs_hash)
+                        logger.info(f"Retrieved global model data with keys: {list(global_model_data.keys())}")
+                        
+                        # Extract ensemble weights from global model data with proper fallbacks
+                        aggregated_weights = None
+                        base_model_names = None
+                        
+                        # Try different possible locations for ensemble weights
+                        if "ensemble_weights" in global_model_data:
+                            aggregated_weights = global_model_data["ensemble_weights"]
+                            logger.info(f"Found ensemble weights in global model data: {aggregated_weights}")
+                        
+                        # Try different possible locations for base model names
+                        if "base_model_names" in global_model_data:
+                            base_model_names = global_model_data["base_model_names"]
+                            logger.info(f"Found base model names in global model data: {base_model_names}")
+                        elif "info" in global_model_data and "base_model_names" in global_model_data["info"]:
+                            base_model_names = global_model_data["info"]["base_model_names"]
+                            logger.info(f"Found base model names in global model info: {base_model_names}")
+                        
+                        if aggregated_weights and base_model_names:
+                            # Load saved base models if not already loaded
+                            if not hasattr(self, 'base_models_loaded') or not self.base_models_loaded:
+                                models_dir = os.path.join("models", f"client_{self.client_id}")
+                                logger.info(f"Loading base models from {models_dir}")
+                                
+                                # Load base models using pipeline's method
+                                self.ga_pipeline.load_base_models(models_dir)
+                                self.base_models_loaded = True
+                                
+                                # Check if models were loaded successfully
+                                if hasattr(self.ga_pipeline, 'trained_base_models'):
+                                    logger.info(f"Loaded {len(self.ga_pipeline.trained_base_models)} trained base models")
+                                else:
+                                    logger.error("No trained_base_models found after loading")
+                                    raise ValueError("Failed to load base models")
+                            
+                            # Check if we have trained base models before fine-tuning
+                            if not hasattr(self.ga_pipeline, 'trained_base_models') or not self.ga_pipeline.trained_base_models:
+                                logger.error("No trained_base_models available for fine-tuning")
+                                raise ValueError("No trained base models available")
+                            
+                            # Log the models we have
+                            logger.info(f"Fine-tuning with base models: {list(self.ga_pipeline.trained_base_models.keys())}")
+                            
+                            # Ensure weights are in the correct format
+                            if isinstance(aggregated_weights, list):
+                                # Convert to numpy array if needed
+                                aggregated_weights = np.array(aggregated_weights)
+                            
+                            # Now perform the actual fine-tuning - explicitly passing the required parameters
+                            logger.info(f"Fine-tuning with aggregated weights: {aggregated_weights}")
+                            self.ga_results = self.ga_pipeline.fine_tune(
+                                X_train=X_train, 
+                                y_train=y_train, 
+                                X_val=X_val, 
+                                y_val=y_val,
+                                base_models=self.ga_pipeline.trained_base_models,  # This is required
+                                weights=aggregated_weights  # Pass the weights
+                            )
+                            
+                            # Update ensemble state after fine-tuning
+                            self.ensemble_state = self.ga_pipeline.get_ensemble_state()
+                            
+                            logger.info(f"Completed fine-tuning with {len(aggregated_weights)} base models")
+                            logger.info(f"Updated ensemble weights: {self.ensemble_state.get('weights', [])}")
+                        else:
+                            logger.error(f"Missing required data in global model. Found keys: {list(global_model_data.keys())}")
+                            if "info" in global_model_data:
+                                logger.error(f"Info section contains keys: {list(global_model_data['info'].keys())}")
+                    except Exception as e:
+                        logger.error(f"Error retrieving global model from IPFS: {str(e)}")
+                        import traceback
+                        logger.error(traceback.format_exc())
+                else:
+                    logger.error("No global model IPFS hash provided for fine-tuning")
             except Exception as e:
                 logger.error(f"Error in fine-tuning: {str(e)}")
                 import traceback
-                traceback.print_exc()
-        
-        # Evaluate on test data (using your existing code)
+                logger.error(traceback.format_exc())
+          
+        # Evaluate on test data
         if hasattr(self, 'ga_pipeline') and self.ga_pipeline is not None and hasattr(self.ga_pipeline, 'predict'):
-            # [Your existing evaluation code here]
             y_pred = self.ga_pipeline.predict(self.X_test)
             test_metrics = evaluate_metrics(self.y_test, y_pred)
             
             accuracy = test_metrics['accuracy'] * 100.0
-            loss = 1.0 - test_metrics['precision']
+            loss = 1.0 - test_metrics['precision']  # Use 1-Precision as a loss
             
-            # Calculate base model average score
-            if hasattr(self, 'ga_results') and self.ga_results:
-                avg_base_model_score = np.mean([
-                    test_metrics['f1'], 
-                    self.ga_results.get('diversity_score', 0.0),
-                    self.ga_results.get('generalization_score', 0.0)
-                ])
-            else:
-                avg_base_model_score = 0.0
-            
-            # Prepare GA-Stacking metrics
             ga_stacking_metrics = {
+                # Keep the data_points metric (used in our new reward system)
+                "data_points": len(self.X_train),  # Use the raw number of training samples
+                
+                # Store recall value directly from test metrics
+                "recall": float(test_metrics['recall']),  # Recall is critical for fraud detection
+                
+                # Keep other metrics for backward compatibility
                 "data_size": len(self.X_train),
-                "training_rounds": server_round,
-                "evaluation_score": float(test_metrics['f1']),
-                "ensemble_accuracy": float(test_metrics['accuracy']),
-                "diversity_score": self.ga_results.get('diversity_score', 0.0) if hasattr(self, 'ga_results') else 0.0,
-                "generalization_score": self.ga_results.get('generalization_score', 0.0) if hasattr(self, 'ga_results') else 0.0,
-                "convergence_rate": self.ga_results.get('convergence_rate', 0.0) if hasattr(self, 'ga_results') else 0.0,
-                "avg_base_model_score": avg_base_model_score,
-                "final_score": (
-                    float(test_metrics['f1']) * 0.4 +
-                    self.ga_results.get('diversity_score', 0.0) * 0.2 +
-                    self.ga_results.get('generalization_score', 0.0) * 0.2 +
-                    self.ga_results.get('convergence_rate', 0.0) * 0.1 +
-                    avg_base_model_score * 0.1
-                ) if hasattr(self, 'ga_results') else float(test_metrics['f1'])
+                "training_rounds": server_round if not hasattr(self, 'rounds_participated') else self.rounds_participated + 1,
+                "evaluation_score": float(test_metrics['f1'])
             }
             
             metrics = {
@@ -422,7 +369,7 @@ class GAStackingClient(fl.client.NumPyClient):
                 "f1_score": float(test_metrics['f1']),
             }
         else:
-            # Fallback metrics if pipeline failed
+            # Fallback if pipeline isn't trained
             accuracy, loss = 0.0, float('inf')
             metrics = {
                 "loss": float(loss),
@@ -432,40 +379,61 @@ class GAStackingClient(fl.client.NumPyClient):
                 "f1_score": 0.0
             }
             ga_stacking_metrics = {
+                # Keep the data_points metric (used in our new reward system)
+                "data_points": len(self.X_train),  # Use the raw number of training samples
+                
+                # Store recall value directly from test metrics
+                "recall": float(test_metrics['recall']),  # Recall is critical for fraud detection
+                
+                # Keep other metrics for backward compatibility
                 "data_size": len(self.X_train),
-                "training_rounds": server_round,
-                "evaluation_score": 0.0,
-                "ensemble_accuracy": 0.0,
-                "diversity_score": 0.0,
-                "generalization_score": 0.0,
-                "convergence_rate": 0.0,
-                "avg_base_model_score": 0.0,
-                "final_score": 0.0
+                "training_rounds": server_round if not hasattr(self, 'rounds_participated') else self.rounds_participated + 1,
+                "evaluation_score": float(test_metrics['f1'])
             }
-        
-        # Store ensemble weights and metrics in IPFS
+
+        # Create and store client data in IPFS
         try:
+            # Make sure ensemble weights and base model names are properly formatted
+            ensemble_weights = self.ensemble_state.get("weights", [])
+            if isinstance(ensemble_weights, np.ndarray):
+                ensemble_weights = ensemble_weights.tolist()
+            
+            base_model_names = self.ensemble_state.get("model_names", [])
+            
+            # Create IPFS data structure that matches server expectations
             client_data = {
-                "ensemble_weights": self.ensemble_state.get("weights", []),
-                "base_model_names": self.ensemble_state.get("model_names", []),
-                "data_size": len(self.X_train),
-                "metrics": {
-                    "accuracy": float(accuracy),
-                    "f1_score": float(metrics.get('f1_score', 0.0)),
-                    "final_score": ga_stacking_metrics.get("final_score", 0.0)
+                "ensemble_weights": ensemble_weights,  # Store directly in root
+                "base_model_names": base_model_names,  # Store directly in root
+                "info": {
+                    "round": server_round,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "version": "client-" + str(self.client_id),
+                    "client_id": self.client_id,
+                    "wallet_address": self.wallet_address if self.wallet_address else "unknown",
+                    "data_size": len(self.X_train),
+                    "base_model_names": base_model_names  # Also store in info for server compatibility
                 },
-                "client_id": self.client_id,
-                "wallet_address": self.wallet_address if self.wallet_address else "unknown",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "round": server_round
+                "metrics": {
+                    "accuracy": float(accuracy) if 'accuracy' in locals() else 0.0,
+                    "f1_score": float(metrics.get('f1_score', 0.0)) if 'metrics' in locals() else 0.0,
+                }
             }
             
+            # Store in IPFS
             client_ipfs_hash = self.ipfs.add_json(client_data)
             logger.info(f"Stored client data in IPFS: {client_ipfs_hash}")
+            
+            # Verify data was stored correctly by retrieving it
+            verification = self.ipfs.get_json(client_ipfs_hash)
+            logger.info(f"Verification - stored data contains keys: {list(verification.keys())}")
+            if "ensemble_weights" in verification:
+                logger.info(f"Ensemble weights successfully stored, length: {len(verification['ensemble_weights'])}")
+            else:
+                logger.warning("Ensemble weights missing from stored data!")
         except Exception as e:
             logger.error(f"Failed to save client data to IPFS: {str(e)}")
             client_ipfs_hash = None
-        
+
         # Update metrics history
         self.metrics_history.append({
             "round": server_round,
@@ -476,26 +444,39 @@ class GAStackingClient(fl.client.NumPyClient):
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "ga_stacking_metrics": ga_stacking_metrics
         })
-        
+
+        # Track participation for future rounds
+        self.rounds_participated = server_round
+
         # Include necessary information in metrics
         metrics["client_ipfs_hash"] = client_ipfs_hash
         metrics["wallet_address"] = self.wallet_address if self.wallet_address else "unknown"
-        metrics["ensemble_size"] = len(self.ensemble_state.get("model_names", [])) if hasattr(self, 'ensemble_state') else 0
-        metrics["base_model_names"] = self.ensemble_state.get("model_names", []) if hasattr(self, 'ensemble_state') else []
-        metrics["ensemble_weights"] = self.ensemble_state.get("weights", []) if hasattr(self, 'ensemble_state') else []
+        metrics["ensemble_size"] = len(self.ensemble_state.get("model_names", [])) if (hasattr(self, 'ensemble_state') and self.ensemble_state is not None) else 0
         
-        # Add GA-Stacking metrics
+        # Instead of directly sending lists in metrics, convert them to strings
+        if hasattr(self, 'ensemble_state') and self.ensemble_state is not None:
+            metrics["base_model_names_str"] = json.dumps(self.ensemble_state.get("model_names", []))
+            metrics["ensemble_weights_str"] = json.dumps(self.ensemble_state.get("weights", []).tolist() 
+                                                    if isinstance(self.ensemble_state.get("weights", []), np.ndarray) 
+                                                    else self.ensemble_state.get("weights", []))
+        else:
+            metrics["base_model_names_str"] = json.dumps([])
+            metrics["ensemble_weights_str"] = json.dumps([])
+        
+        # Add GA-Stacking specific metrics
         for key, value in ga_stacking_metrics.items():
             metrics[key] = value
-        
-        # Return empty parameters with metrics
+
+        # For IPFS-only approach, we only need to send metadata and hash
+        # Instead of serializing the full ensemble state
         empty_parameters = [np.array([])]
-        
-        # Ensure serializable metrics
+
+        # Make sure metrics only contains serializable values
         for key in list(metrics.keys()):
             if not isinstance(metrics[key], (int, float, str, bool, list)):
                 metrics[key] = str(metrics[key])
-        
+
+        # Return empty parameters with all information in metrics
         return empty_parameters, len(self.X_train), metrics
     
     def evaluate(self, parameters: Parameters, config: Dict[str, Scalar]) -> Tuple[float, int, Dict[str, Scalar]]:
@@ -546,7 +527,6 @@ class GAStackingClient(fl.client.NumPyClient):
                 "precision": 0.0,
                 "recall": 0.0,
                 "f1_score": 0.0,
-                "auc_roc": 0.5,
                 "wallet_address": self.wallet_address if self.wallet_address else "unknown",
                 "model_status": "not_trained"
             }
@@ -557,7 +537,7 @@ class GAStackingClient(fl.client.NumPyClient):
             test_metrics = evaluate_metrics(self.y_test, y_pred)
             
             accuracy = test_metrics['accuracy'] * 100.0
-            loss = 1.0 - test_metrics['auc']  # Use 1-AUC as a loss
+            loss = 1.0 - test_metrics['precision']  # Use 1-precision as a loss
             
             # Calculate confusion matrix components
             threshold = 0.3  # Adjust based on your use case
@@ -584,7 +564,6 @@ class GAStackingClient(fl.client.NumPyClient):
                 "precision": float(test_metrics['precision']),
                 "recall": float(test_metrics['recall']),
                 "f1_score": float(test_metrics['f1']),
-                "auc_roc": float(test_metrics['auc']),
                 "wallet_address": self.wallet_address if self.wallet_address else "unknown",
                 "ensemble_size": len(self.ensemble_state.get("model_names", [])) if hasattr(self, 'ensemble_state') else 0,
                 
@@ -593,6 +572,9 @@ class GAStackingClient(fl.client.NumPyClient):
                 "false_positives": int(fp),
                 "true_negatives": int(tn),
                 "false_negatives": int(fn),
+                
+                # Add these two lines for the reward system
+                "data_points": len(self.X_train),  # Include data points for reward calculation
                 
                 "model_status": "trained"
             }
@@ -614,7 +596,6 @@ class GAStackingClient(fl.client.NumPyClient):
                 "precision": float(test_metrics['precision']),
                 "recall": float(test_metrics['recall']),
                 "f1_score": float(test_metrics['f1']),
-                "auc_roc": float(test_metrics['auc']),
                 "eval_samples": len(self.X_test),
                 "ipfs_hash": ipfs_hash,
                 "wallet_address": self.wallet_address if self.wallet_address else "unknown",
@@ -631,7 +612,6 @@ class GAStackingClient(fl.client.NumPyClient):
                 "precision": 0.0,
                 "recall": 0.0,
                 "f1_score": 0.0,
-                "auc_roc": 0.5,
                 "wallet_address": self.wallet_address if self.wallet_address else "unknown",
                 "error": str(e),
                 "model_status": "error"

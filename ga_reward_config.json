@@ -1,17 +1,14 @@
 {
     "metric_weights": {
-        "data_size": 0.40,
-        "training_rounds": 0.20,
-        "evaluation_score": 0.40
+        "recall": 0.60,
+        "data_points": 0.40
     },
     "reward_scaling": {
         "base_amount": 0.1,
         "increment_per_round": 0.02
     },
-    "data_size_normalization": {
-        "max_samples": 10000
-    },
-    "training_rounds_normalization": {
-        "max_rounds": 10
+    "data_points_normalization": {
+        "min_value": 1000,
+        "log_scale": true
     }
 }

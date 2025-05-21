@@ -49,6 +49,7 @@ class GAStackingPipeline:
         self.meta_model = None
         self.convergence_history = []
         self.model_names = list(base_models.keys())
+        self.init_weights = init_weights
     
     def train(self, X_train, y_train, X_val, y_val, init_weights=None):
         """Train the GA-Stacking ensemble with optional initial weights."""
@@ -387,6 +388,8 @@ class GAStackingPipeline:
             # Run GA with fewer generations
             if self.verbose:
                 print("Running lightweight GA optimization...")
+            
+            reduced_generations = max(5, self.generations // 3)
 
             self.best_weights, convergence = GA_weighted(
                 meta_X_train, y_train, meta_X_val, y_val,

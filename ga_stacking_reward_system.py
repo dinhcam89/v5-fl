@@ -23,7 +23,7 @@ class GAStackingRewardSystem:
     
     def __init__(self, blockchain_connector, config_path="config/ga_reward_config.json"):
         """
-        Initialize the simplified GA-Stacking reward system.
+        Initialize the fraud detection focused reward system.
         
         Args:
             blockchain_connector: BlockchainConnector instance
@@ -33,21 +33,19 @@ class GAStackingRewardSystem:
         self.logger = logging.getLogger('GAStackingRewardSystem')
         
         # Set default configuration first to ensure it always exists
-        # Default configuration with simplified metric weights
+        # Default configuration with recall and data points focus
         self.config = {
             "metric_weights": {
-                "data_size": 0.40,          # 40% weight for data size
-                "training_rounds": 0.20,    # 20% weight for training rounds participation
-                "evaluation_score": 0.40    # 40% weight for evaluation results (F1-score)
+                "recall": 0.60,         # 60% weight for recall (finding true fraud cases)
+                "data_points": 0.40      # 40% weight for data contribution size
             },
             "reward_scaling": {
                 "base_amount": 0.1,         # ETH per round
                 "increment_per_round": 0.02 # Increase each round
             },
-            "f1_score_bonus": {
-                "enabled": True,
-                "threshold": 0.85,
-                "bonus_multiplier": 1.2
+            "data_points_normalization": {
+                "min_value": 1000,
+                "log_scale": True
             }
         }
         
@@ -59,7 +57,7 @@ class GAStackingRewardSystem:
                     loaded_config = json.load(f)
                     # Update config with loaded values
                     self.config.update(loaded_config)
-                self.logger.info(f"Loaded GA-Stacking reward configuration from {config_path}")
+                self.logger.info(f"Loaded fraud detection reward configuration from {config_path}")
             else:
                 self.logger.warning(f"Config file not found at {config_path}, using default configuration")
                 
@@ -74,8 +72,8 @@ class GAStackingRewardSystem:
                 self.logger.info(f"Created default configuration file at {config_path}")
         except Exception as e:
             self.logger.warning(f"Could not load config from {config_path}: {e}")
-            self.logger.info("Using default simplified reward configuration")
-    
+            self.logger.info("Using default fraud detection reward configuration")
+        
     def start_training_round(self, round_number):
         """
         Start a new training round with an appropriate reward pool.
@@ -114,68 +112,68 @@ class GAStackingRewardSystem:
     
     def record_client_contribution(self, client_address, ipfs_hash, metrics, round_number):
         """
-        Record a client's contribution with simplified scoring based on:
-        1. Data size used for training
-        2. Number of training rounds participated
-        3. Evaluation score based on F1-score
+        Record a client's contribution with scoring based on:
+        1. Recall - ability to detect true fraud cases
+        2. Data points - amount of data contributed
         """
         try:
-            self.logger.info(f"Processing simplified contribution for {client_address}")
+            self.logger.info(f"Processing fraud detection contribution for {client_address}")
             
-            # Extract the simplified metrics
-            data_size = metrics.get('data_size', 0)           # Number of samples
-            training_rounds = metrics.get('training_rounds', 0) # Number of rounds participated
-            eval_score = metrics.get('evaluation_score', 0)    # F1-score on test set
+            # Extract the recall and data points metrics
+            recall = metrics.get('recall', 0)  # Recall from validation/test set
+            data_points = metrics.get('data_points', metrics.get('data_size', 0))  # Support both names
             
             # Log the extracted metrics
-            self.logger.info(f"Client metrics - data_size: {data_size}, training_rounds: {training_rounds}, "
-                        f"evaluation_score: {eval_score}")
+            self.logger.info(f"Client metrics - recall: {recall}, data_points: {data_points}")
             
-            # Get weights from config, using defaults if not present
+            # Get weights from config, using fraud detection defaults if not present
             weights = self.config.get("metric_weights", {
-                "data_size": 0.40,
-                "training_rounds": 0.20,
-                "evaluation_score": 0.40
+                "recall": 0.60,
+                "data_points": 0.40
             })
             
-            # Normalize metrics (assuming reasonable ranges)
+            # Normalize metrics
             try:
-                norm_data_size = min(1.0, data_size / 10000)  # Normalize data size (cap at 10,000 samples)
-            except (TypeError, ZeroDivisionError):
-                norm_data_size = 0.1  # Default if data_size is invalid
-                
-            try:
-                norm_rounds = min(1.0, training_rounds / 10)  # Normalize rounds (cap at 10 rounds)
-            except (TypeError, ZeroDivisionError):
-                norm_rounds = 0.1  # Default if training_rounds is invalid
-                
-            try:
-                # Handle potential float conversion issues
-                eval_score_float = float(eval_score)
-                norm_eval = max(0.0, min(1.0, eval_score_float))  # Ensure eval score is between 0-1
+                # For recall, ensure it's between 0-1
+                recall_float = float(recall)
+                norm_recall = max(0.0, min(1.0, recall_float))
             except (TypeError, ValueError):
-                norm_eval = 0.1  # Default if eval_score is invalid
+                norm_recall = 0.1  # Default if recall is invalid
+                
+            try:
+                # For data points, use logarithmic scaling for large datasets
+                if data_points <= 0:
+                    norm_data_points = 0.0
+                elif data_points < 1000:
+                    # Linear scaling for small datasets (0-1000 points)
+                    norm_data_points = min(1.0, data_points / 1000.0)
+                else:
+                    # Logarithmic scaling for large datasets (1000+ points)
+                    # log10(1000)=3, log10(1M)=6, gives a value between 0-1
+                    import math
+                    norm_data_points = min(1.0, (math.log10(data_points) - 3) / 3)
+            except (TypeError, ValueError):
+                norm_data_points = 0.1  # Default if data_points is invalid
             
             # Calculate weighted score
             weighted_score = (
-                norm_data_size * weights.get('data_size', 0.4) +
-                norm_rounds * weights.get('training_rounds', 0.2) +
-                norm_eval * weights.get('evaluation_score', 0.4)
+                norm_recall * weights.get('recall', 0.6) +
+                norm_data_points * weights.get('data_points', 0.4)
             )
             
-            # Apply F1-score bonus if configured
-            f1_score_bonus = 0.0
-            if self.config.get("f1_score_bonus", {}).get("enabled", False):
-                bonus_config = self.config.get("f1_score_bonus", {})
+            # Apply high recall bonus if configured
+            recall_bonus = 0.0
+            if self.config.get("recall_bonus", {}).get("enabled", False):
+                bonus_config = self.config.get("recall_bonus", {})
                 threshold = bonus_config.get("threshold", 0.85)
                 multiplier = bonus_config.get("bonus_multiplier", 1.2)
                 
-                if norm_eval > threshold:
-                    f1_score_bonus = (norm_eval - threshold) * multiplier
-                    self.logger.info(f"Applied F1-score bonus of {f1_score_bonus:.4f} for exceptional F1-score")
+                if norm_recall > threshold:
+                    recall_bonus = (norm_recall - threshold) * multiplier
+                    self.logger.info(f"Applied recall bonus of {recall_bonus:.4f} for exceptional recall")
             
             # Add the bonus to the weighted score
-            weighted_score += f1_score_bonus
+            weighted_score += recall_bonus
             
             # Ensure minimum score
             weighted_score = max(0.01, weighted_score)
@@ -183,7 +181,12 @@ class GAStackingRewardSystem:
             # Convert to integer score (1-10000)
             final_score = max(1, int(weighted_score * 10000))
             
-            self.logger.info(f"Calculated simplified score for {client_address}: {final_score}")
+            # Log detailed score breakdown
+            self.logger.info(f"Calculated fraud detection score for {client_address}: {final_score}")
+            self.logger.info(f"  - Recall contribution: {norm_recall * weights.get('recall', 0.6) * 10000:.0f}")
+            self.logger.info(f"  - Data points contribution: {norm_data_points * weights.get('data_points', 0.4) * 10000:.0f}")
+            if recall_bonus > 0:
+                self.logger.info(f"  - Recall bonus: {recall_bonus * 10000:.0f}")
             
             # Check if blockchain connector is properly initialized
             if not self.blockchain:
@@ -224,7 +227,7 @@ class GAStackingRewardSystem:
                 return False, 0, None
                 
         except Exception as e:
-            self.logger.error(f"Error recording simplified contribution: {e}")
+            self.logger.error(f"Error recording fraud detection contribution: {e}")
             traceback.print_exc()
             return False, 0, None
     
@@ -426,7 +429,6 @@ class GAStackingRewardSystem:
             
             # Return a dummy function that does nothing
             return lambda: None
-
     
     def get_reward_pool_info(self, round_number):
         """

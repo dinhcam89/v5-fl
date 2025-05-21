@@ -352,22 +352,24 @@ class EnhancedFedAvgWithGA(fl.server.strategy.FedAvg):
                 client_ipfs_hash = fit_res.metrics.get("client_ipfs_hash")
                 
                 # Collect GA-Stacking metrics for reward calculation
-                ga_metrics = {
+                reward_metrics = {
                     "ipfs_hash": client_ipfs_hash,
-                    "ensemble_accuracy": fit_res.metrics.get("ensemble_accuracy", fit_res.metrics.get("accuracy", 0.0)),
-                    "diversity_score": fit_res.metrics.get("diversity_score", 0.0),
-                    "generalization_score": fit_res.metrics.get("generalization_score", 0.0),
-                    "convergence_rate": fit_res.metrics.get("convergence_rate", 0.5),
-                    "avg_base_model_score": fit_res.metrics.get("avg_base_model_score", 0.0),
-                    "final_score": fit_res.metrics.get("final_score", 0)
+                    
+                    # Get recall directly from client metrics (critical for fraud detection)
+                    "recall": fit_res.metrics.get("recall", 0.0),
+                    
+                    # Get data points (supporting both data_points and data_size keys)
+                    "data_points": fit_res.metrics.get("data_points", 
+                                                    fit_res.metrics.get("data_size", 
+                                                                    fit_res.num_examples))
                 }
                 
                 # Store contribution metrics for this round
                 if client_ipfs_hash and wallet_address != "unknown":
-                    self.current_round_contributions[wallet_address] = ga_metrics
-            else:
-                logger.warning(f"Rejecting contribution from unauthorized client: {wallet_address}")
-                unauthorized_clients.append((client, wallet_address))
+                    self.current_round_contributions[wallet_address] = reward_metrics            
+                else:
+                    logger.warning(f"Rejecting contribution from unauthorized client: {wallet_address}")
+                    unauthorized_clients.append((client, wallet_address))
 
         # Check if enough clients returned results
         if not authorized_results:
@@ -472,29 +474,32 @@ class EnhancedFedAvgWithGA(fl.server.strategy.FedAvg):
                 for contrib in client_contributions:
                     wallet_address = contrib["wallet_address"]
                     try:
-                        # Get stored GA metrics for this client
-                        ga_metrics = self.current_round_contributions.get(wallet_address, {})
-                        if not ga_metrics:
-                            # If no metrics stored, create minimal metrics
-                            ga_metrics = {
+                        # Get stored metrics for this client
+                        reward_metrics = self.current_round_contributions.get(wallet_address, {})
+                        if not reward_metrics:
+                            # If no metrics stored, create minimal metrics with recall and data points
+                            reward_metrics = {
                                 "ipfs_hash": contrib["ipfs_hash"],
-                                "final_score": contrib.get("score", 0.0)
+                                "recall": 0.0,  # Default recall
+                                "data_points": contrib.get("data_size", 0)  # Use data_size if available
                             }
                             
-                        # Record contribution with detailed GA-Stacking metrics
+                        # Record contribution with recall and data points metrics
                         success, score, tx_hash = self.reward_system.record_client_contribution(
                             client_address=wallet_address,
                             ipfs_hash=contrib["ipfs_hash"],
-                            metrics=ga_metrics,
+                            metrics=reward_metrics,  # Pass the recall-focused metrics
                             round_number=server_round
                         )
                         
                         if success:
-                            logger.info(f"Recorded GA-Stacking contribution for {wallet_address} with score {score}, tx: {tx_hash}")
+                            logger.info(f"Recorded contribution for {wallet_address} with score {score} based on " +
+                                    f"recall={reward_metrics.get('recall', 0.0):.4f}, " +
+                                    f"data_points={reward_metrics.get('data_points', 0)}")
                         else:
-                            logger.warning(f"Failed to record GA-Stacking contribution for {wallet_address}")
+                            logger.warning(f"Failed to record contribution for {wallet_address}")
                     except Exception as e:
-                        logger.error(f"Error recording GA-Stacking contribution for {wallet_address}: {e}")
+                        logger.error(f"Error recording contribution for {wallet_address}: {e}")
 
                 # Finalize the round and allocate rewards
                 try:
@@ -873,9 +878,92 @@ class EnhancedFedAvgWithGA(fl.server.strategy.FedAvg):
 
         return loss_aggregated, metrics
 
+    # def save_metrics_history(self, filepath: str = "metrics/metrics_history.json"):
+    #     """Save metrics history to a file with fraud-specific metrics visualizations."""
+    #     # Save combined metrics history
+    #     with open(filepath, "w") as f:
+    #         json.dump(self.metrics_history, f, indent=2)
+    #     logger.info(f"Saved metrics history to {filepath}")
+        
+    #     # Save individual round metrics to separate files
+    #     metrics_dir = Path(filepath).parent
+    #     metrics_dir.mkdir(parents=True, exist_ok=True)
+        
+    #     for round_metrics in self.metrics_history:
+    #         round_num = round_metrics.get("round", 0)
+    #         round_file = metrics_dir / f"round_{round_num}_metrics.json"
+    #         with open(round_file, "w") as f:
+    #             json.dump(round_metrics, f, indent=2)
+    #         logger.info(f"Saved round {round_num} metrics to {round_file}")
+        
+    #     # Generate fraud metrics visualizations
+    #     try:
+    #         # Import visualization module
+    #         from metrics_visualization import (
+    #             generate_fraud_metrics_dashboard, 
+    #             plot_metrics_history,
+    #             generate_client_metrics_comparison
+    #         )
+            
+    #         # Create visualizations directory
+    #         vis_dir = metrics_dir / "visualizations"
+    #         vis_dir.mkdir(exist_ok=True)
+            
+    #         # Generate main dashboard
+    #         dashboard_path = vis_dir / "fraud_metrics_dashboard.png"
+    #         generate_fraud_metrics_dashboard(self.metrics_history, save_path=str(dashboard_path))
+            
+    #         # Generate individual metric plots
+    #         metrics_to_plot = [
+    #             "accuracy", "precision", "recall", "f1_score", "auc_roc",
+    #             "true_positives", "false_positives", "false_negatives"
+    #         ]
+            
+    #         for metric in metrics_to_plot:
+    #             try:
+    #                 metric_path = vis_dir / f"{metric}_history.png"
+    #                 fig = plot_metrics_history(self.metrics_history, [metric])
+    #                 fig.savefig(metric_path, dpi=300, bbox_inches='tight')
+    #                 plt.close(fig)
+    #             except Exception as e:
+    #                 logger.error(f"Error creating {metric} plot: {e}")
+            
+    #         # Combined plots for related metrics
+    #         try:
+    #             # Precision, Recall, F1
+    #             prec_rec_path = vis_dir / "precision_recall_f1.png"
+    #             fig = plot_metrics_history(self.metrics_history, ["precision", "recall", "f1_score"])
+    #             fig.savefig(prec_rec_path, dpi=300, bbox_inches='tight')
+    #             plt.close(fig)
+                
+    #             # Confusion matrix components
+    #             cm_path = vis_dir / "confusion_matrix_components.png"
+    #             fig = plot_metrics_history(self.metrics_history, ["true_positives", "false_positives", "false_negatives"])
+    #             fig.savefig(cm_path, dpi=300, bbox_inches='tight')
+    #             plt.close(fig)
+    #         except Exception as e:
+    #             logger.error(f"Error creating combined plots: {e}")
+            
+    #         # If client data is available, create client comparison plots
+    #         if hasattr(self, 'client_metrics') and self.client_metrics:
+    #             for metric in ["accuracy", "precision", "recall", "f1_score"]:
+    #                 try:
+    #                     comparison_path = vis_dir / f"client_{metric}_comparison.png"
+    #                     fig = generate_client_metrics_comparison(self.client_metrics, metric, save_path=str(comparison_path))
+    #                     plt.close(fig)
+    #                 except Exception as e:
+    #                     logger.error(f"Error creating client comparison for {metric}: {e}")
+            
+    #         logger.info(f"Generated fraud metrics visualizations in {vis_dir}")
+            
+    #     except ImportError as e:
+    #         logger.error(f"Could not import visualization module: {e}")
+    #     except Exception as e:
+    #         logger.error(f"Error generating fraud metrics visualizations: {e}")
+    
     def save_metrics_history(self, filepath: str = "metrics/metrics_history.json"):
-        """Save metrics history to a file with fraud-specific metrics visualizations."""
-        # Save combined metrics history
+        """Save metrics history to a file with visualizations."""
+        # Original code to save metrics history to JSON files
         with open(filepath, "w") as f:
             json.dump(self.metrics_history, f, indent=2)
         logger.info(f"Saved metrics history to {filepath}")
@@ -891,71 +979,35 @@ class EnhancedFedAvgWithGA(fl.server.strategy.FedAvg):
                 json.dump(round_metrics, f, indent=2)
             logger.info(f"Saved round {round_num} metrics to {round_file}")
         
-        # Generate fraud metrics visualizations
+        # Generate visualizations
         try:
             # Import visualization module
-            from metrics_visualization import (
-                generate_fraud_metrics_dashboard, 
-                plot_metrics_history,
-                generate_client_metrics_comparison
-            )
+            from visualization import generate_all_visualizations
             
             # Create visualizations directory
             vis_dir = metrics_dir / "visualizations"
             vis_dir.mkdir(exist_ok=True)
             
-            # Generate main dashboard
-            dashboard_path = vis_dir / "fraud_metrics_dashboard.png"
-            generate_fraud_metrics_dashboard(self.metrics_history, save_path=str(dashboard_path))
+            # Generate all visualizations
+            visualizations = generate_all_visualizations(
+                self.metrics_history, 
+                self.client_metrics if hasattr(self, 'client_metrics') else {},
+                str(vis_dir)
+            )
             
-            # Generate individual metric plots
-            metrics_to_plot = [
-                "accuracy", "precision", "recall", "f1_score", "auc_roc",
-                "true_positives", "false_positives", "false_negatives"
-            ]
+            # Save visualization paths to a file for reference
+            vis_index_file = vis_dir / "visualization_index.json"
+            with open(vis_index_file, "w") as f:
+                json.dump(visualizations, f, indent=2)
             
-            for metric in metrics_to_plot:
-                try:
-                    metric_path = vis_dir / f"{metric}_history.png"
-                    fig = plot_metrics_history(self.metrics_history, [metric])
-                    fig.savefig(metric_path, dpi=300, bbox_inches='tight')
-                    plt.close(fig)
-                except Exception as e:
-                    logger.error(f"Error creating {metric} plot: {e}")
-            
-            # Combined plots for related metrics
-            try:
-                # Precision, Recall, F1
-                prec_rec_path = vis_dir / "precision_recall_f1.png"
-                fig = plot_metrics_history(self.metrics_history, ["precision", "recall", "f1_score"])
-                fig.savefig(prec_rec_path, dpi=300, bbox_inches='tight')
-                plt.close(fig)
-                
-                # Confusion matrix components
-                cm_path = vis_dir / "confusion_matrix_components.png"
-                fig = plot_metrics_history(self.metrics_history, ["true_positives", "false_positives", "false_negatives"])
-                fig.savefig(cm_path, dpi=300, bbox_inches='tight')
-                plt.close(fig)
-            except Exception as e:
-                logger.error(f"Error creating combined plots: {e}")
-            
-            # If client data is available, create client comparison plots
-            if hasattr(self, 'client_metrics') and self.client_metrics:
-                for metric in ["accuracy", "precision", "recall", "f1_score"]:
-                    try:
-                        comparison_path = vis_dir / f"client_{metric}_comparison.png"
-                        fig = generate_client_metrics_comparison(self.client_metrics, metric, save_path=str(comparison_path))
-                        plt.close(fig)
-                    except Exception as e:
-                        logger.error(f"Error creating client comparison for {metric}: {e}")
-            
-            logger.info(f"Generated fraud metrics visualizations in {vis_dir}")
-            
+            logger.info(f"Generated visualizations in {vis_dir}")
         except ImportError as e:
             logger.error(f"Could not import visualization module: {e}")
         except Exception as e:
-            logger.error(f"Error generating fraud metrics visualizations: {e}")
-    
+            logger.error(f"Error generating visualizations: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            
     def save_client_stats(self, filepath: str = "metrics/client_stats.json"):
         """Save client contribution statistics to a file."""
         if not self.blockchain:
