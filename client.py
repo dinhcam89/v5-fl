@@ -212,9 +212,9 @@ class GAStackingClient(fl.client.NumPyClient):
             try:
                 # Initialize the GA pipeline with config parameters
                 self.ga_pipeline = GAStackingPipeline(
-                    pop_size=config.get("pop_size", 50),
-                    generations=config.get("generations", 20),
-                    cv_folds=config.get("cv_folds", 5),
+                    pop_size=10,
+                    generations=5,
+                    cv_folds=5,
                     verbose=True
                 )
                 

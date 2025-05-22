@@ -1,12 +1,11 @@
-"""
+'''
 Module: ga
 ----------
 Genetic Algorithm for optimizing weight vectors over meta-features.
-"""
+'''
 import numpy as np
 import random
 from sklearn.metrics import f1_score, precision_score, recall_score
-
 
 def initialize_population(pop_size: int, n_models: int) -> list:
     """
@@ -18,7 +17,6 @@ def initialize_population(pop_size: int, n_models: int) -> list:
         w /= w.sum()
         pop.append(w)
     return pop
-
 
 def evaluate(
     population: list,
@@ -44,33 +42,29 @@ def evaluate(
         raise ValueError(f"Unsupported metric '{metric}'. Choose from: {list(metric_func_map.keys())}")
 
     scores = []
+    normalized_pop = []
     for w in population:
-        # Normalize weights safely
-        w = w / w.sum() if w.sum() != 0 else np.ones_like(w) / len(w)
-
-        # Weighted ensemble output
+        w = np.clip(w, 1e-6, None)
+        w /= w.sum()
+        normalized_pop.append(w)
         ens = np.dot(meta_X, w)
-
-        # Evaluate using selected metric
         score = metric_func_map[metric](y_true, ens)
         scores.append(score)
 
-    # Sort scores and population by performance (descending)
     idx = np.argsort(scores)[::-1]
     sorted_scores = [scores[i] for i in idx]
-    sorted_population = [population[i] for i in idx]
+    sorted_population = [normalized_pop[i] for i in idx]
 
     return sorted_scores, sorted_population
 
-def selection(population: list, scores: list) -> list:
+def selection(population: list, scores: list, elite_k: int = 1) -> list:
     """Elitism + tournament selection."""
-    next_pop = [population[0]]
+    next_pop = population[:elite_k]
     while len(next_pop) < len(population):
-        candidates = random.sample(list(zip(population, scores)), k=4)
+        candidates = random.sample(list(zip(population, scores)), k=3)
         winner = max(candidates, key=lambda x: x[1])[0]
-        next_pop.append(winner)
+        next_pop.append(winner.copy())
     return next_pop
-
 
 def crossover(population: list, prob: float) -> list:
     """Blend crossover on real-value vectors."""
@@ -79,7 +73,7 @@ def crossover(population: list, prob: float) -> list:
     while i < len(population):
         if random.random() < prob and i+1 < len(population):
             p1, p2 = population[i], population[i+1]
-            alpha = random.random()
+            alpha = random.uniform(0.4, 0.6)
             c1 = alpha*p1 + (1-alpha)*p2
             c2 = alpha*p2 + (1-alpha)*p1
             next_pop += [c1/c1.sum(), c2/c2.sum()]
@@ -88,22 +82,21 @@ def crossover(population: list, prob: float) -> list:
             next_pop.append(population[i])
             i += 1
     while len(next_pop) < len(population):
-        next_pop.append(random.choice(population))
+        next_pop.append(random.choice(population).copy())
     return next_pop
-
 
 def mutation(population: list, prob: float, scale: float = 0.1) -> list:
-    """Gaussian mutation with renormalization."""
+    """Gaussian mutation with renormalization and lower bound."""
     next_pop = [population[0]]
     for ind in population[1:]:
-        for j in range(len(ind)):
+        mutant = ind.copy()
+        for j in range(len(mutant)):
             if random.random() < prob:
-                ind[j] += np.random.normal(0, scale)
-        ind[ind < 0] = 1e-4
-        ind /= ind.sum()
-        next_pop.append(ind)
+                mutant[j] += np.random.normal(0, scale)
+        mutant = np.clip(mutant, 1e-6, None)
+        mutant /= mutant.sum()
+        next_pop.append(mutant)
     return next_pop
-
 
 def GA_weighted(
     meta_X_train: np.ndarray,
@@ -116,7 +109,7 @@ def GA_weighted(
     mutation_prob: float = 0.3,
     metric: str = 'auc',
     verbose: bool = True,
-    init_weights: np.ndarray = None,  # Tham số mới
+    init_weights: np.ndarray = None,
 ) -> np.ndarray:
     """
     Main GA loop, returns best weight vector.
@@ -124,24 +117,21 @@ def GA_weighted(
     """
     n_models = meta_X_train.shape[1]
 
-    # Chuẩn hóa init_weights nếu có
     if init_weights is not None:
         init_weights = np.array(init_weights)
         if init_weights.shape[0] != n_models:
             raise ValueError(f"init_weights length {init_weights.shape[0]} khác số model {n_models}")
-        init_weights = init_weights / init_weights.sum()
+        init_weights = np.clip(init_weights, 1e-6, None)
+        init_weights /= init_weights.sum()
 
-    # Khởi tạo quần thể
     population = []
     if init_weights is not None:
         population.append(init_weights)
-        # Tạo thêm các cá thể random để đủ pop_size
         for _ in range(pop_size - 1):
             w = np.random.rand(n_models)
             w /= w.sum()
             population.append(w)
     else:
-        # Nếu không truyền init_weights thì random hết
         for _ in range(pop_size):
             w = np.random.rand(n_models)
             w /= w.sum()
@@ -151,7 +141,7 @@ def GA_weighted(
 
     for gen in range(generations):
         scores, population = evaluate(population, meta_X_val, y_val, metric)
-        population = selection(population, scores)
+        population = selection(population, scores, elite_k=1)
         population = crossover(population, crossover_prob)
         population = mutation(population, mutation_prob)
 

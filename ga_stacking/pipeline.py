@@ -364,7 +364,15 @@ class GAStackingPipeline:
                 # Default: just refit with current weights as starting point
                 model.fit(X_train, y_train)
         
-        # Step 2: Generate meta-features for validation set
+        # Step 2: Generate meta-features for training set using cross-validation
+        if self.verbose:
+            print("Generating meta-features...")
+        meta_X_train = generate_meta_features(
+            X_train, y_train, {k: self.trained_base_models[k] for k in self.model_names}, 
+            n_splits=self.cv_folds, n_jobs=-1
+        )
+        
+        # Step 3: Generate meta-features for validation set
         if self.verbose:
             print("Generating validation meta-features...")
         meta_X_val = np.column_stack([
@@ -372,36 +380,31 @@ class GAStackingPipeline:
             for model in self.trained_base_models.values()
         ])
         
-        # Step 3: Use provided weights or run lighter GA
-        if weights is not None:
-            self.best_weights = np.array(weights)
-            self.convergence_history = []  # No convergence history when using provided weights
-        else:
-            # Generate meta-features for training set
-            if self.verbose:
-                print("Generating meta-features for GA optimization...")
-            meta_X_train = generate_meta_features(
-                X_train, y_train, {k: self.trained_base_models[k] for k in self.model_names}, 
-                n_splits=self.cv_folds, n_jobs=-1
-            )
-            
-            # Run GA with fewer generations
-            if self.verbose:
-                print("Running lightweight GA optimization...")
-            
-            reduced_generations = max(5, self.generations // 3)
-
-            self.best_weights, convergence = GA_weighted(
-                meta_X_train, y_train, meta_X_val, y_val,
-                pop_size=self.pop_size,
-                generations=reduced_generations,
-                crossover_prob=self.crossover_prob,
-                mutation_prob=self.mutation_prob,
-                metric=self.metric,
-                verbose=self.verbose,
-                init_weights=weights  # Use current weights as starting point
-            )
-            self.convergence_history = convergence
+        print(f"DEBUG: meta_X_train shape: {meta_X_train.shape}, type: {type(meta_X_train)}")
+        print(f"DEBUG: meta_X_val shape: {meta_X_val.shape}, type: {type(meta_X_val)}")
+        print(f"DEBUG: About to call GA_weighted...")
+        
+        # Step 4: Run GA to get optimal weights, using weights if provided
+        if self.verbose:
+            print("Running GA optimization...")
+            if weights is not None:
+                print(f"Using provided aggregated weights: {weights}")
+        
+        self.best_weights, convergence = GA_weighted(
+            meta_X_train, 
+            y_train, 
+            meta_X_val, 
+            y_val,
+            pop_size=self.pop_size,
+            generations=self.generations,
+            crossover_prob=self.crossover_prob,
+            mutation_prob=self.mutation_prob,
+            metric=self.metric,
+            verbose=self.verbose,
+            init_weights=weights  # Pass weights as initial weights
+        )
+        self.convergence_history = convergence
+        
         
         # Step 4: Calculate ensemble metrics
         ens_val_preds = ensemble_predict(meta_X_val, self.best_weights)
@@ -430,7 +433,7 @@ class GAStackingPipeline:
             else:
                 convergence_rate = 0.0
         else:
-            convergence_rate = 0.75  # Higher default for fine-tuning
+            convergence_rate = 0.65  # Higher default for fine-tuning
         
         results = {
             "val_metrics": val_metrics,
